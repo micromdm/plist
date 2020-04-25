@@ -51,6 +51,7 @@ func (e *Encoder) Encode(v interface{}) error {
 	}
 
 	enc := newXMLEncoder(e.w)
+	enc.indent = e.indent
 	enc.Indent("", e.indent)
 	return enc.generateDocument(pval)
 }

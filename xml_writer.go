@@ -11,52 +11,47 @@ import (
 )
 
 const xmlDOCTYPE = `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`
+const plistStart = `<plist version="1.0">`
+const plistEnd = `</plist>`
 
 type xmlEncoder struct {
-	writer io.Writer
+	indent      string
+	indentCount int
+	err         error
+	writer      io.Writer
 	*xml.Encoder
 }
 
+func (e *xmlEncoder) write(buf []byte) {
+	if e.err != nil {
+		return
+	}
+	_, e.err = e.writer.Write(buf)
+}
+
 func newXMLEncoder(w io.Writer) *xmlEncoder {
-	return &xmlEncoder{w, xml.NewEncoder(w)}
+	return &xmlEncoder{writer: w, Encoder: xml.NewEncoder(w)}
 }
 
 func (e *xmlEncoder) generateDocument(pval *plistValue) error {
-	// xml version=1.0
-	_, err := e.writer.Write([]byte(xml.Header))
-	if err != nil {
+	e.write([]byte(xml.Header))
+	e.write([]byte(xmlDOCTYPE))
+	e.write([]byte("\n"))
+	e.write([]byte(plistStart))
+	if e.indent != "" {
+		e.write([]byte("\n"))
+	}
+
+	if err := e.writePlistValue(pval); err != nil {
 		return err
 	}
 
-	//!DOCTYPE plist
-	_, err = e.writer.Write([]byte(xmlDOCTYPE))
-	if err != nil {
-		return err
+	if e.indent != "" {
+		e.write([]byte("\n"))
 	}
-
-	// newline after doctype
-	// <plist> tag starts on new line
-	_, err = e.writer.Write([]byte("\n"))
-	if err != nil {
-		return err
-	}
-
-	tokenFunc := func(pval *plistValue) error {
-		if err := e.writePlistValue(pval); err != nil {
-			return err
-		}
-		return nil
-	}
-	err = e.writeElement("plist", pval, tokenFunc)
-	if err != nil {
-		return err
-	}
-	// newline at the end of a plist document
-	_, err = e.writer.Write([]byte("\n"))
-	if err != nil {
-		return err
-	}
-	return nil
+	e.write([]byte(plistEnd))
+	e.write([]byte("\n"))
+	return e.err
 }
 
 func (e *xmlEncoder) writePlistValue(pval *plistValue) error {
@@ -108,15 +103,11 @@ func (e *xmlEncoder) writeElement(name string, pval *plistValue, valFunc func(*p
 		Name: xml.Name{
 			Space: "",
 			Local: name,
-		}}
+		},
+	}
 
-	if name == "plist" {
-		startElement.Attr = []xml.Attr{{
-			Name: xml.Name{
-				Space: "",
-				Local: "version"},
-			Value: "1.0"},
-		}
+	if name == "dict" || name == "array" {
+		e.indentCount++
 	}
 
 	// Encode xml.StartElement token
@@ -139,6 +130,10 @@ func (e *xmlEncoder) writeElement(name string, pval *plistValue, valFunc func(*p
 		return err
 	}
 
+	if name == "dict" || name == "array" {
+		e.indentCount--
+	}
+
 	// flush
 	return e.Flush()
 }
@@ -147,10 +142,19 @@ func (e *xmlEncoder) writeArrayValue(pval *plistValue) error {
 	tokenFunc := func(pval *plistValue) error {
 		encodedValue := pval.value
 		values := encodedValue.([]*plistValue)
+		wroteBool := false
 		for _, v := range values {
+			if !wroteBool {
+				wroteBool = v.kind == Boolean
+			}
 			if err := e.writePlistValue(v); err != nil {
 				return err
 			}
+		}
+
+		if e.indent != "" && wroteBool {
+			e.writer.Write([]byte("\n"))
+			e.writer.Write([]byte(e.indent))
 		}
 		return nil
 	}
@@ -214,11 +218,14 @@ func (e *xmlEncoder) writeBoolValue(pval *plistValue) error {
 	// EncodeElement results in <true></true> instead of <true/>
 	// use writer to write self closing tags
 	b := pval.value.(bool)
-	_, err := e.writer.Write([]byte(fmt.Sprintf("<%t/>", b)))
-	if err != nil {
-		return err
+	if e.indent != "" {
+		e.write([]byte("\n"))
+		for i := 0; i < e.indentCount; i++ {
+			e.write([]byte(e.indent))
+		}
 	}
-	return nil
+	e.write([]byte(fmt.Sprintf("<%t/>", b)))
+	return e.err
 }
 
 func (e *xmlEncoder) writeIntegerValue(pval *plistValue) error {
