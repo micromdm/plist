@@ -2,7 +2,6 @@ package plist
 
 import (
 	"bytes"
-	"io/ioutil"
 	"testing"
 	"time"
 )
@@ -248,8 +247,6 @@ func TestIndent(t *testing.T) {
 	}
 	out := string(b)
 	if out != indentRef {
-		ioutil.WriteFile("out", b, 0777)
-		ioutil.WriteFile("want", []byte(indentRef), 0777)
 		t.Errorf("MarshalIndent(%v) = \n%v, \nwant\n%v", sparseBundleHeader, out, indentRef)
 	}
 }
