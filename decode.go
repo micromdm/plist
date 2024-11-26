@@ -12,6 +12,12 @@ import (
 // MarshalFunc is a function used to Unmarshal custom plist types.
 type MarshalFunc func(interface{}) error
 
+// Unmarshaler is the interface implemented by types that can unmarshal
+// themselves from property list objects. The UnmarshalPlist method
+// receives a function that may be called to unmarshal the original
+// property list value into a field or variable.
+//
+// It is safe to call the unmarshal function more than once.
 type Unmarshaler interface {
 	UnmarshalPlist(f func(interface{}) error) error
 }
