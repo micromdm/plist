@@ -50,7 +50,7 @@ func newBinaryParser(r io.ReadSeeker) (*binaryParser, error) {
 	}
 
 	// numObjectsMax is arbitrary. Please fix.
-	// TODO(github.com/groob/plist/issues/28)
+	// TODO(github.com/micromdm/plist/issues/28)
 	if bp.NumObjects > numObjectsMax {
 		return nil, fmt.Errorf("plist: offset size larger than expected %d", numObjectsMax)
 	}

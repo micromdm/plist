@@ -3,7 +3,7 @@ package plist_test
 import (
 	"fmt"
 
-	"github.com/groob/plist"
+	"github.com/micromdm/plist"
 )
 
 const data = `<?xml version="1.0" encoding="UTF-8"?>
