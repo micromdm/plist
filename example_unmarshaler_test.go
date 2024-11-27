@@ -55,8 +55,8 @@ func (t *TypeDecider) UnmarshalPlist(f func(interface{}) error) error {
 	return f(t.ActualType)
 }
 
-// Example_unmarshaler demonstrates using structs that use the Unmarshaler interface.
-func Example_unmarshaler() {
+// ExampleUnmarshaler demonstrates using structs that use the Unmarshaler interface.
+func ExampleUnmarshaler() {
 	decider := new(TypeDecider)
 	if err := plist.Unmarshal([]byte(data), decider); err != nil {
 		fmt.Println(err)
