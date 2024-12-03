@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -515,19 +516,7 @@ func TestDecodeTagSkip(t *testing.T) {
 	}
 }
 
-// test parity with plutil -lint on macOS
-var xmlParityTestFailures = map[string]struct{}{
-	"empty-plist.plist":          {},
-	"invalid-before-plist.plist": {},
-	"invalid-data.plist":         {},
-	"invalid-middle.plist":       {},
-	"invalid-start.plist":        {},
-	"no-dict-end.plist":          {},
-	"no-plist-end.plist":         {},
-	"unescaped-plist.plist":      {},
-	"unescaped-xml.plist":        {},
-}
-
+// TestXMLPlutilParity tests parity with plutil -lint on macOS
 func TestXMLPlutilParity(t *testing.T) {
 	type data struct {
 		Key string `plist:"key"`
@@ -549,16 +538,19 @@ func TestXMLPlutilParity(t *testing.T) {
 		v := new(data)
 		err = Unmarshal(buf, v)
 
-		_, check := xmlParityTestFailures[test.Name()]
+		shouldFail := strings.HasSuffix(test.Name(), ".failure.plist")
 		if plutil != "" {
-			check = exec.Command(plutil, "-lint", testPath).Run() != nil
+			plutilFail := exec.Command(plutil, "-lint", testPath).Run() != nil
+			if shouldFail != plutilFail {
+				t.Errorf("expected plutil test failure: %v for %s, but got test failure: %v", shouldFail, test.Name(), plutilFail)
+			}
 		}
 
-		if check && err == nil {
+		if shouldFail && err == nil {
 			t.Errorf("expected error for test %s but got: nil", test.Name())
-		} else if !check && err != nil {
+		} else if !shouldFail && err != nil {
 			t.Errorf("expected no error for test %s but got: %v", test.Name(), err)
-		} else if !check && v.Key != "val" {
+		} else if !shouldFail && v.Key != "val" {
 			t.Errorf("expected key=val for test %s but got: key=%s", test.Name(), v.Key)
 		}
 	}
