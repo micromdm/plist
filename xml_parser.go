@@ -17,6 +17,19 @@ type xmlParser struct {
 	*xml.Decoder
 }
 
+func (p *xmlParser) Token() (xml.Token, error) {
+	for {
+		token, err := p.Decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := token.(xml.Comment); ok {
+			continue
+		}
+		return token, nil
+	}
+}
+
 // newXMLParser returns a new xmlParser
 func newXMLParser(r io.Reader) *xmlParser {
 	return &xmlParser{xml.NewDecoder(r)}
