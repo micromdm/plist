@@ -555,3 +555,167 @@ func TestXMLPlutilParity(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeWithDict decodes with a dictionary into a field with a custom type
+// that requires a UnmarshalPlist() method and using a subset of a plist file
+// from github.com/ProfileManifests/ProfileManifests
+func TestDecodeWithDict(t *testing.T) {
+	r := bytes.NewBuffer([]byte(yamlForTestDecodeWithDict))
+	decoder := NewXMLDecoder(r)
+	pm := ProfileManifestTestType{}
+	err := decoder.Decode(&pm)
+	if err != nil {
+		t.Errorf("Failed to decode profile manifest: %s", err.Error())
+	}
+	if have, want := pm.Domain, "com.apple.dock"; have != want {
+		t.Errorf("have %s, want %s", have, want)
+		return
+	}
+	if have, want := len(pm.Subkeys), 1; have != want {
+		t.Errorf("have %d, want %d", have, want)
+		return
+	}
+	if have, want := pm.Subkeys[0].Name, "static-apps"; have != want {
+		t.Errorf("have %s, want %s", have, want)
+		return
+	}
+	if have, want := len(pm.Subkeys[0].Subkeys), 1; have != want {
+		t.Errorf("have %d, want %d", have, want)
+		return
+	}
+	if have, want := len(pm.Subkeys[0].Subkeys[0].Subkeys), 2; have != want {
+		t.Errorf("have %d, want %d", have, want)
+		return
+	}
+	if have, want := pm.Subkeys[0].Subkeys[0].Subkeys[0].Default.Value, "file-tile"; have != want {
+		t.Errorf("have %s, want %s", have, want)
+		return
+	}
+	if have, want := len(pm.Subkeys[0].Subkeys[0].Subkeys[1].Subkeys), 7; have != want {
+		t.Errorf("have %d, want %d", have, want)
+		return
+	}
+	if have, want := pm.Subkeys[0].Subkeys[0].Subkeys[1].Subkeys[1].Default.Value, uint64(100); have != want {
+		t.Errorf("have %d, want %d", have, want)
+		return
+	}
+	if have, want := pm.Subkeys[0].Subkeys[0].Subkeys[1].Subkeys[2].Default.Value, 1.234; have != want {
+		t.Errorf("have %f, want %f", have, want)
+		return
+	}
+}
+
+type TestValueForDecodeWithDict struct {
+	Value interface{}
+}
+
+// UnmarshalPlist only captures the value and assigns to Value.value which is of
+func (v *TestValueForDecodeWithDict) UnmarshalPlist(f func(interface{}) error) (err error) {
+	var value interface{}
+	err = f(&value)
+	if err != nil {
+		return err
+	}
+	v.Value = value
+	return nil
+}
+
+type ManifestKeyTestType struct {
+	Name    string                      `plist:"pfm_name"`
+	Default *TestValueForDecodeWithDict `plist:"pfm_default,omitempty"`
+	Subkeys []ManifestKeyTestType       `plist:"pfm_subkeys,omitempty"`
+}
+
+type ProfileManifestTestType struct {
+	Domain  string                `plist:"pfm_domain"`
+	Subkeys []ManifestKeyTestType `plist:"pfm_subkeys"`
+}
+
+// yamlForTestDecodeWithDict is a subset of this:
+// — https://github.com/ProfileManifests/ProfileManifests/tree/master/Manifests/ManifestsApple/com.apple.dock.plist
+// With a few modifications to give data to test for
+const yamlForTestDecodeWithDict = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>pfm_domain</key>
+    <string>com.apple.dock</string>
+    <key>pfm_subkeys</key>
+    <array>
+      <dict>
+        <key>pfm_name</key>
+        <string>static-apps</string>
+        <key>pfm_subkeys</key>
+        <array>
+          <dict>
+            <key>pfm_name</key>
+            <string>StaticItem</string>
+            <key>pfm_subkeys</key>
+            <array>
+              <dict>
+                <key>pfm_default</key>
+                <string>file-tile</string>
+                <key>pfm_name</key>
+                <string>tile-type</string>
+              </dict>
+              <dict>
+                <key>pfm_name</key>
+                <string>tile-data</string>
+                <key>pfm_subkeys</key>
+                <array>
+                  <dict>
+                    <key>pfm_name</key>
+                    <string>label</string>
+                  </dict>
+                  <dict>
+										<key>pfm_default</key>
+										<integer>100</integer>
+										<key>pfm_name</key>
+										<string>Amount</string>
+                  </dict>
+                  <dict>
+										<key>pfm_default</key>
+										<real>1.234</real>
+										<key>pfm_name</key>
+										<string>Fraction</string>
+                  </dict>
+                  <dict>
+                    <key>pfm_name</key>
+                    <string>file-label</string>
+                  </dict>
+                  <dict>
+                    <key>pfm_name</key>
+                    <string>file-type</string>
+                  </dict>
+                  <dict>
+                    <key>pfm_name</key>
+                    <string>file-data</string>
+                    <key>pfm_subkeys</key>
+                    <array>
+                      <dict>
+												<key>pfm_default</key>
+												<string>example.com</string>
+                        <key>pfm_name</key>
+                        <string>_CFURLString</string>
+                      </dict>
+                      <dict>
+												<key>pfm_default</key>
+												<string>whatever</string>
+                        <key>pfm_name</key>
+                        <string>_CFURLStringType</string>
+                      </dict>
+                    </array>
+                  </dict>
+                  <dict>
+                    <key>pfm_name</key>
+                    <string>url</string>
+                  </dict>
+                </array>
+              </dict>
+            </array>
+          </dict>
+        </array>
+      </dict>
+    </array>
+  </dict>
+</plist>`
