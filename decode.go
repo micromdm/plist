@@ -91,6 +91,14 @@ func (d *Decoder) Decode(v interface{}) error {
 }
 
 func (d *Decoder) unmarshal(pval *plistValue, v reflect.Value) error {
+
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		v = v.Elem()
+	}
+
 	// check for empty interface v type
 	if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
 		val := reflect.ValueOf(d.valueInterface(pval))
@@ -99,13 +107,6 @@ func (d *Decoder) unmarshal(pval *plistValue, v reflect.Value) error {
 		}
 		v.Set(val)
 		return nil
-	}
-
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			v.Set(reflect.New(v.Type().Elem()))
-		}
-		v = v.Elem()
 	}
 
 	unmarshalerType := reflect.TypeOf((*Unmarshaler)(nil)).Elem()
