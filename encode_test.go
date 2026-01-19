@@ -390,3 +390,23 @@ func TestEncodeTagSkip(t *testing.T) {
 		t.Error("field encoded when it was tagged as -")
 	}
 }
+
+func TestEncodeUID(t *testing.T) {
+	data := struct {
+		MyUID UID `plist:"uid"`
+	}{
+		MyUID: 42,
+	}
+
+	b, err := Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Contains(b, []byte("CF$UID")) {
+		t.Error("expected CF$UID in output")
+	}
+	if !bytes.Contains(b, []byte("<integer>42</integer>")) {
+		t.Error("expected <integer>42</integer> in output")
+	}
+}

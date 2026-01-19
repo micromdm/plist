@@ -98,6 +98,11 @@ func (e *Encoder) marshal(v reflect.Value) (*plistValue, error) {
 		return nil, &UnsupportedValueError{v, v.String()}
 	}
 
+	// check for UID type
+	if v.Type() == reflect.TypeOf(UID(0)) {
+		return &plistValue{UIDKind, UID(v.Uint())}, nil
+	}
+
 	switch v.Kind() {
 	case reflect.String:
 		return &plistValue{String, v.String()}, nil
