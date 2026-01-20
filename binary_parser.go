@@ -289,7 +289,7 @@ func (bp *binaryParser) parseUID(marker byte) (*plistValue, error) {
 	if _, err := bp.Read(buf[8-nbytes:]); err != nil {
 		return nil, err
 	}
-	return &plistValue{UIDKind, UID(binary.BigEndian.Uint64(buf))}, nil
+	return &plistValue{CFUID, UID(binary.BigEndian.Uint64(buf))}, nil
 }
 
 func (bp *binaryParser) parseData(marker byte) (*plistValue, error) {

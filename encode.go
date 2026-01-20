@@ -100,7 +100,7 @@ func (e *Encoder) marshal(v reflect.Value) (*plistValue, error) {
 
 	// check for UID type
 	if v.Type() == reflect.TypeOf(UID(0)) {
-		return &plistValue{UIDKind, UID(v.Uint())}, nil
+		return &plistValue{CFUID, UID(v.Uint())}, nil
 	}
 
 	switch v.Kind() {

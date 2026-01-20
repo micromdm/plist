@@ -126,7 +126,7 @@ func (p *xmlParser) parseDict(element *xml.StartElement) (*plistValue, error) {
 		case xml.EndElement:
 			if len(subvalues) == 1 {
 				if uidVal, ok := subvalues["CF$UID"]; ok && uidVal.kind == Integer {
-					return &plistValue{UIDKind, UID(uidVal.value.(signedInt).value)}, nil
+					return &plistValue{CFUID, UID(uidVal.value.(signedInt).value)}, nil
 				}
 			}
 			return &plistValue{Dictionary, &dictionary{m: subvalues}}, nil

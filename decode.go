@@ -157,7 +157,7 @@ func (d *Decoder) unmarshal(pval *plistValue, v reflect.Value) error {
 		return d.unmarshalData(pval, v)
 	case Date:
 		return d.unmarshalDate(pval, v)
-	case UIDKind:
+	case CFUID:
 		return d.unmarshalUID(pval, v)
 	default:
 		return fmt.Errorf("plist: %v is an unsuported plist element kind", pval.kind)
@@ -337,7 +337,7 @@ func (d *Decoder) valueInterface(pval *plistValue) interface{} {
 		return pval.value.([]byte)
 	case Date:
 		return pval.value.(time.Time)
-	case UIDKind:
+	case CFUID:
 		return pval.value.(UID)
 	default:
 		return nil

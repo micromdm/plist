@@ -14,7 +14,7 @@ const (
 	Boolean
 	Data
 	Date
-	UIDKind
+	CFUID
 )
 
 type UID uint64
@@ -29,7 +29,7 @@ var plistKindNames = map[plistKind]string{
 	Boolean:    "boolean",
 	Data:       "data",
 	Date:       "date",
-	UIDKind:    "uid",
+	CFUID:      "uid",
 }
 
 type plistValue struct {

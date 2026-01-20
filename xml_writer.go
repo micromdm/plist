@@ -72,7 +72,7 @@ func (e *xmlEncoder) writePlistValue(pval *plistValue) error {
 		return e.writeRealValue(pval)
 	case Data:
 		return e.writeDataValue(pval)
-	case UIDKind:
+	case CFUID:
 		return e.writeUIDValue(pval)
 	default:
 		return &UnsupportedTypeError{reflect.ValueOf(pval.value).Type()}
