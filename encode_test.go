@@ -410,3 +410,46 @@ func TestEncodeUID(t *testing.T) {
 		t.Error("expected <integer>42</integer> in output")
 	}
 }
+
+func TestEncodeDecodeUIDRoundtrip(t *testing.T) {
+	type Data struct {
+		MyUID UID `plist:"uid"`
+	}
+
+	original := Data{MyUID: 42}
+
+	b, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded Data
+	if err := Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+
+	if decoded.MyUID != original.MyUID {
+		t.Error("Expected", original.MyUID, "got", decoded.MyUID)
+	}
+}
+
+func TestEncodeDecodeUIDRoundtripIncompatibleType(t *testing.T) {
+	type Data struct {
+		MyUID UID `plist:"uid"`
+	}
+
+	original := Data{MyUID: 42}
+
+	b, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded struct {
+		MyUID string `plist:"uid"`
+	}
+	err = Unmarshal(b, &decoded)
+	if err == nil {
+		t.Error("Expected error when decoding UID to string")
+	}
+}
