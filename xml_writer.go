@@ -72,6 +72,8 @@ func (e *xmlEncoder) writePlistValue(pval *plistValue) error {
 		return e.writeRealValue(pval)
 	case Data:
 		return e.writeDataValue(pval)
+	case CFUID:
+		return e.writeUIDValue(pval)
 	default:
 		return &UnsupportedTypeError{reflect.ValueOf(pval.value).Type()}
 	}
@@ -80,6 +82,15 @@ func (e *xmlEncoder) writePlistValue(pval *plistValue) error {
 func (e *xmlEncoder) writeDataValue(pval *plistValue) error {
 	encodedValue := base64.StdEncoding.EncodeToString(pval.value.([]byte))
 	return e.EncodeElement(encodedValue, xml.StartElement{Name: xml.Name{Local: "data"}})
+}
+
+func (e *xmlEncoder) writeUIDValue(pval *plistValue) error {
+	dict := &dictionary{
+		m: map[string]*plistValue{
+			"CF$UID": {Integer, signedInt{uint64(pval.value.(UID)), false}},
+		},
+	}
+	return e.writeDictionaryValue(&plistValue{Dictionary, dict})
 }
 
 func (e *xmlEncoder) writeRealValue(pval *plistValue) error {

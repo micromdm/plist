@@ -616,3 +616,130 @@ func TestDecodeCustomType(t *testing.T) {
 		t.Errorf("typ.Val2: have %v, want %v", have, want)
 	}
 }
+
+// inline bplist with dict containing uid key and UID(42) value
+var uidBplist = []byte{
+	0x62, 0x70, 0x6c, 0x69, 0x73, 0x74, 0x30, 0x30,
+	0xd1, 0x01, 0x02,
+	0x53, 0x75, 0x69, 0x64,
+	0x80, 0x2a,
+	0x08, 0x0b, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x11,
+}
+
+func TestDecodeUID(t *testing.T) {
+	var data struct {
+		UID UID `plist:"uid"`
+	}
+	if err := Unmarshal(uidBplist, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.UID != 42 {
+		t.Error("Expected", UID(42), "got", data.UID)
+	}
+}
+
+func TestDecodeUIDToUint64(t *testing.T) {
+	var data struct {
+		UID uint64 `plist:"uid"`
+	}
+	if err := Unmarshal(uidBplist, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.UID != 42 {
+		t.Error("Expected", 42, "got", data.UID)
+	}
+}
+
+func TestDecodeUIDToInterface(t *testing.T) {
+	var data interface{}
+	if err := Unmarshal(uidBplist, &data); err != nil {
+		t.Fatal(err)
+	}
+	m := data.(map[string]interface{})
+	uid := m["uid"].(UID)
+	if uid != 42 {
+		t.Error("Expected", UID(42), "got", uid)
+	}
+}
+
+func TestDecodeUIDToIncompatibleType(t *testing.T) {
+	var data struct {
+		UID string `plist:"uid"`
+	}
+	if err := Unmarshal(uidBplist, &data); err == nil {
+		t.Error("Expected error unmarshaling UID into string")
+	}
+}
+
+func TestDecodeUIDToFloat(t *testing.T) {
+	var data struct {
+		UID float64 `plist:"uid"`
+	}
+	if err := Unmarshal(uidBplist, &data); err == nil {
+		t.Error("Expected error unmarshaling UID into float64")
+	}
+}
+
+func TestDecodeUIDToBool(t *testing.T) {
+	var data struct {
+		UID bool `plist:"uid"`
+	}
+	if err := Unmarshal(uidBplist, &data); err == nil {
+		t.Error("Expected error unmarshaling UID into bool")
+	}
+}
+
+func TestDecodeUIDInvalidSize(t *testing.T) {
+	// bplist with UID marker 0x89 (9 bytes, but max is 8)
+	bplist := []byte{
+		0x62, 0x70, 0x6c, 0x69, 0x73, 0x74, 0x30, 0x30,
+		0x89, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a,
+		0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x12,
+	}
+
+	var data interface{}
+	if err := Unmarshal(bplist, &data); err == nil {
+		t.Error("Expected error for UID with invalid size")
+	}
+}
+
+func TestDecodeUIDFromFile(t *testing.T) {
+	content, err := ioutil.ReadFile(filepath.Join("testdata", "uid.binary.plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var data interface{}
+	if err := Unmarshal(content, &data); err != nil {
+		t.Fatal(err)
+	}
+
+	m := data.(map[string]interface{})
+	objects := m["$objects"].([]interface{})
+
+	obj1 := objects[1].(map[string]interface{})
+	classUID, ok := obj1["$class"].(UID)
+	if !ok {
+		t.Fatal("Expected $class to be UID")
+	}
+	if classUID != 2 {
+		t.Error("Expected", UID(2), "got", classUID)
+	}
+
+	top := m["$top"].(map[string]interface{})
+	rootUID, ok := top["root"].(UID)
+	if !ok {
+		t.Fatal("Expected root to be UID")
+	}
+	if rootUID != 1 {
+		t.Error("Expected", UID(1), "got", rootUID)
+	}
+}

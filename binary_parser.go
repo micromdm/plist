@@ -127,8 +127,8 @@ func (bp *binaryParser) parseObjectRef(index uint64) (val *plistValue, err error
 		return bp.parseASCII(marker)
 	case 0x6: // unicode (utf-16) string
 		return bp.parseUTF16(marker)
-	case 0x8: // uid (not supported)
-		return &plistValue{Invalid, nil}, nil
+	case 0x8: // uid
+		return bp.parseUID(marker)
 	case 0xa: // array
 		return bp.parseArray(marker)
 	case 0xc: // set (not supported)
@@ -278,6 +278,18 @@ func (bp *binaryParser) parseDate(marker byte) (*plistValue, error) {
 	secs := int64(t)
 	nsecs := int64((t - float64(secs)) * 1e9)
 	return &plistValue{Date, time.Unix(secs, nsecs)}, nil
+}
+
+func (bp *binaryParser) parseUID(marker byte) (*plistValue, error) {
+	nbytes := int(marker&0xf) + 1
+	if nbytes > 8 {
+		return nil, fmt.Errorf("plist: UID too large: %d bytes", nbytes)
+	}
+	buf := make([]byte, 8)
+	if _, err := bp.Read(buf[8-nbytes:]); err != nil {
+		return nil, err
+	}
+	return &plistValue{CFUID, UID(binary.BigEndian.Uint64(buf))}, nil
 }
 
 func (bp *binaryParser) parseData(marker byte) (*plistValue, error) {

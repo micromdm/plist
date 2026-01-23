@@ -157,6 +157,8 @@ func (d *Decoder) unmarshal(pval *plistValue, v reflect.Value) error {
 		return d.unmarshalData(pval, v)
 	case Date:
 		return d.unmarshalDate(pval, v)
+	case CFUID:
+		return d.unmarshalUID(pval, v)
 	default:
 		return fmt.Errorf("plist: %v is an unsuported plist element kind", pval.kind)
 	}
@@ -167,6 +169,23 @@ func (d *Decoder) unmarshalDate(pval *plistValue, v reflect.Value) error {
 		return UnmarshalTypeError{fmt.Sprintf("%v", pval.value), v.Type()}
 	}
 	v.Set(reflect.ValueOf(pval.value.(time.Time)))
+	return nil
+}
+
+func (d *Decoder) unmarshalUID(pval *plistValue, v reflect.Value) error {
+	uidType := reflect.TypeOf(UID(0))
+	if v.Type() == uidType {
+		v.SetUint(uint64(pval.value.(UID)))
+		return nil
+	}
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(int64(pval.value.(UID)))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		v.SetUint(uint64(pval.value.(UID)))
+	default:
+		return UnmarshalTypeError{fmt.Sprintf("UID(%d)", pval.value.(UID)), v.Type()}
+	}
 	return nil
 }
 
@@ -318,6 +337,8 @@ func (d *Decoder) valueInterface(pval *plistValue) interface{} {
 		return pval.value.([]byte)
 	case Date:
 		return pval.value.(time.Time)
+	case CFUID:
+		return pval.value.(UID)
 	default:
 		return nil
 	}
