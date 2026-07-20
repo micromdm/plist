@@ -253,11 +253,22 @@ func (bp *binaryParser) parseReal(marker byte) (*plistValue, error) {
 	if _, err := bp.Read(buf); err != nil {
 		return nil, err
 	}
-	var r float64
-	if err := binary.Read(bytes.NewReader(buf), binary.BigEndian, &r); err != nil {
-		return nil, err
+	switch len(buf) {
+	case 4:
+		var r float32
+		if err := binary.Read(bytes.NewReader(buf), binary.BigEndian, &r); err != nil {
+			return nil, err
+		}
+		return &plistValue{Real, sizedFloat{float64(r), nbytes * 8}}, nil
+	case 8:
+		var r float64
+		if err := binary.Read(bytes.NewReader(buf), binary.BigEndian, &r); err != nil {
+			return nil, err
+		}
+		return &plistValue{Real, sizedFloat{r, nbytes * 8}}, nil
+	default:
+		return nil, fmt.Errorf("plist: invalid length of real number: expected: 4 or 8, got: %d", len(buf))
 	}
-	return &plistValue{Real, sizedFloat{r, nbytes * 8}}, nil
 }
 
 func (bp *binaryParser) parseDate(marker byte) (*plistValue, error) {
