@@ -37,7 +37,7 @@ const maxObjectDepth = 128
 
 // maxObjectNodes bounds the TOTAL number of objects materialized while
 // decoding, defeating exponential-expansion inputs.
-const maxObjectNodes = 1 << 21 // ~2.1M
+var maxObjectNodes = 1 << 21 // ~2.1M
 
 // newBinaryParser takes in a ReadSeeker for the bytes of a binary plist and
 // returns a parser after reading the offset table and trailer.

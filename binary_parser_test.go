@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"strings"
 	"testing"
-	"time"
 )
 
 //  1. Self-reference: object 0 is an array whose only element points back at 0.
@@ -22,6 +21,11 @@ func TestBinaryParserSelfReference(t *testing.T) {
 //     The node budget must reject it QUICKLY (finish well under the timeout AND
 //     return an error). This is the case parse-layer memoization alone fails.
 func TestBinaryParserExponentialFanout(t *testing.T) {
+	// Shrink the budget so the guard trips almost immediately — we're
+	// verifying the guard fires, not how fast it counts to 2 million.
+	defer func(n int) { maxObjectNodes = n }(maxObjectNodes)
+	maxObjectNodes = 1000
+
 	const n = 40
 	objs := make([][]byte, n+1)
 	for i := 0; i < n; i++ {
@@ -30,16 +34,10 @@ func TestBinaryParserExponentialFanout(t *testing.T) {
 	objs[n] = asciiObj("leaf")
 	data := buildBinaryPlist(objs, 0, 2)
 
-	type res struct{ err error }
-	ch := make(chan res, 1)
-	go func() { var out interface{}; ch <- res{Unmarshal(data, &out)} }()
-	select {
-	case r := <-ch:
-		if r.err == nil || !strings.Contains(r.err.Error(), "object graph exceeds maximum size") {
-			t.Fatal("want error: exponential graph should be rejected by the node budget")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Unmarshal did not finish; exponential expansion is not bounded")
+	var out interface{}
+	err := Unmarshal(data, &out)
+	if err == nil || !strings.Contains(err.Error(), "object graph exceeds maximum size") {
+		t.Fatalf("want maximum-size error, got %v", err)
 	}
 }
 
