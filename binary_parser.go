@@ -23,12 +23,21 @@ type plistTrailer struct {
 }
 
 type binaryParser struct {
-	OffsetTable   []uint64 // array of offsets for each object in plist
-	plistTrailer           // last 32 bytes of plist
-	io.ReadSeeker          // reader for plist data
+	OffsetTable   []uint64        // array of offsets for each object in plist
+	plistTrailer                  // last 32 bytes of plist
+	io.ReadSeeker                 // reader for plist data
+	inProgress    map[uint64]bool // indices currently on the recursion stack (cycle detection)
+	depth         int             // current recursion depth
+	nodes         int             // total materialized objects so far (expansion budget)
 }
 
-const numObjectsMax = 4 << 20
+// maxObjectDepth bounds binary-plist reference nesting to prevent
+// stack exhaustion.
+const maxObjectDepth = 128
+
+// maxObjectNodes bounds the TOTAL number of objects materialized while
+// decoding, defeating exponential-expansion inputs.
+var maxObjectNodes = 1 << 21 // ~2.1M
 
 // newBinaryParser takes in a ReadSeeker for the bytes of a binary plist and
 // returns a parser after reading the offset table and trailer.
@@ -44,21 +53,32 @@ func newBinaryParser(r io.ReadSeeker) (*binaryParser, error) {
 		return nil, fmt.Errorf("plist: couldn't read trailer: %v", err)
 	}
 
+	if bp.OffsetIntSize == 0 || bp.OffsetIntSize > 8 {
+		return nil, fmt.Errorf("plist: invalid offset int size %d", bp.OffsetIntSize)
+	}
+	if bp.ObjectRefSize == 0 || bp.ObjectRefSize > 8 {
+		return nil, fmt.Errorf("plist: invalid object ref size %d", bp.ObjectRefSize)
+	}
+
+	fileLen, err := bp.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	// Offsets live in [OffsetTableOffset, fileLen-trailerSize); each is OffsetIntSize bytes.
+	if bp.OffsetTableOffset > uint64(fileLen) ||
+		bp.NumObjects > (uint64(fileLen)-bp.OffsetTableOffset)/uint64(bp.OffsetIntSize) {
+		return nil, fmt.Errorf("plist: NumObjects (%d) exceeds available data", bp.NumObjects)
+	}
+	if bp.RootObject >= bp.NumObjects {
+		return nil, fmt.Errorf("plist: root object ref out of range")
+	}
+
 	// Read the offset table.
 	if _, err := bp.Seek(int64(bp.OffsetTableOffset), io.SeekStart); err != nil {
 		return nil, fmt.Errorf("plist: couldn't seek to start of offset table: %v", err)
 	}
 
-	// numObjectsMax is arbitrary. Please fix.
-	// TODO(github.com/micromdm/plist/issues/28)
-	if bp.NumObjects > numObjectsMax {
-		return nil, fmt.Errorf("plist: offset size larger than expected %d", numObjectsMax)
-	}
-
 	bp.OffsetTable = make([]uint64, bp.NumObjects)
-	if bp.OffsetIntSize > 8 {
-		return nil, fmt.Errorf("plist: can't decode when offset int size (%d) is greater than 8", bp.OffsetIntSize)
-	}
 	for i := uint64(0); i < bp.NumObjects; i++ {
 		buf := make([]byte, 8)
 		if _, err := bp.Read(buf[8-bp.OffsetIntSize:]); err != nil {
@@ -66,6 +86,8 @@ func newBinaryParser(r io.ReadSeeker) (*binaryParser, error) {
 		}
 		bp.OffsetTable[i] = uint64(binary.BigEndian.Uint64(buf))
 	}
+
+	bp.inProgress = make(map[uint64]bool)
 
 	return &bp, nil
 }
@@ -82,6 +104,33 @@ func (bp *binaryParser) parseDocument() (*plistValue, error) {
 // This function restores the current plist offset when it's done so that you
 // may call it while decoding a collection object without losing your place.
 func (bp *binaryParser) parseObjectRef(index uint64) (val *plistValue, err error) {
+
+	if index >= uint64(len(bp.OffsetTable)) {
+		return nil, fmt.Errorf("plist: offset too large: %d", index)
+	}
+
+	// cyclic references
+	if bp.inProgress[index] {
+		return nil, fmt.Errorf("plist: cyclic object reference at index %d", index)
+	}
+
+	// total expansion budget
+	bp.nodes++
+	if bp.nodes > maxObjectNodes {
+		return nil, fmt.Errorf("plist: object graph exceeds maximum size (%d nodes)", maxObjectNodes)
+	}
+
+	// max depth check
+	if bp.depth >= maxObjectDepth {
+		return nil, fmt.Errorf("plist: object nesting exceeds maximum depth %d", maxObjectDepth)
+	}
+	bp.inProgress[index] = true
+	bp.depth++
+	defer func() {
+		delete(bp.inProgress, index)
+		bp.depth--
+	}()
+
 	// Save the current offset.
 	offset, err := bp.Seek(0, io.SeekCurrent)
 	if err != nil {
@@ -95,9 +144,6 @@ func (bp *binaryParser) parseObjectRef(index uint64) (val *plistValue, err error
 		}
 	}()
 
-	if index > uint64(len(bp.OffsetTable)) {
-		return nil, fmt.Errorf("plist: offset too large: %d", index)
-	}
 	// Move to the start of the object we want to decode.
 	if _, err := bp.Seek(int64(bp.OffsetTable[index]), io.SeekStart); err != nil {
 		return nil, err
@@ -249,6 +295,9 @@ func (bp *binaryParser) parseInteger(marker byte) (*plistValue, error) {
 
 func (bp *binaryParser) parseReal(marker byte) (*plistValue, error) {
 	nbytes := 1 << (marker & 0xf)
+	if nbytes > 8 {
+		return nil, fmt.Errorf("plist: real longer than 8 bytes (%d)", nbytes)
+	}
 	buf := make([]byte, nbytes)
 	if _, err := bp.Read(buf); err != nil {
 		return nil, err
@@ -297,6 +346,9 @@ func (bp *binaryParser) parseData(marker byte) (*plistValue, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := bp.checkCount(count, 1); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, count)
 	if _, err := bp.Read(buf); err != nil {
 		return nil, err
@@ -309,6 +361,9 @@ func (bp *binaryParser) parseASCII(marker byte) (*plistValue, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := bp.checkCount(count, 1); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, count)
 	if _, err := bp.Read(buf); err != nil {
 		return nil, err
@@ -319,6 +374,9 @@ func (bp *binaryParser) parseASCII(marker byte) (*plistValue, error) {
 func (bp *binaryParser) parseUTF16(marker byte) (*plistValue, error) {
 	count, err := bp.readCount(marker)
 	if err != nil {
+		return nil, err
+	}
+	if err := bp.checkCount(count, 2); err != nil {
 		return nil, err
 	}
 	// Each character in the UTF16 string is 2 bytes.  First we read everything
@@ -419,6 +477,9 @@ func (bp *binaryParser) readObjectRef() (uint64, error) {
 // It decodes a sequence of object refs from the current offset in the plist
 // and returns the decoded objects in a slice.
 func (bp *binaryParser) readObjectList(count uint64) ([]*plistValue, error) {
+	if err := bp.checkCount(count, uint64(bp.ObjectRefSize)); err != nil {
+		return nil, err
+	}
 	list := make([]*plistValue, count)
 	for i := uint64(0); i < count; i++ {
 		// Read index of object in offset table.
@@ -434,4 +495,30 @@ func (bp *binaryParser) readObjectList(count uint64) ([]*plistValue, error) {
 		list[i] = v
 	}
 	return list, nil
+}
+
+// remainingInObjects reports the bytes between the current read position and the
+// start of the offset table (the end of the object region).
+func (bp *binaryParser) remainingInObjects() (uint64, error) {
+	pos, err := bp.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	if uint64(pos) >= bp.OffsetTableOffset {
+		return 0, nil
+	}
+	return bp.OffsetTableOffset - uint64(pos), nil
+}
+
+// checkCount rejects a declared element count that cannot fit in the remaining
+// object-region bytes (each element occupies at least unit bytes on the wire).
+func (bp *binaryParser) checkCount(count, unit uint64) error {
+	rem, err := bp.remainingInObjects()
+	if err != nil {
+		return err
+	}
+	if unit == 0 || count > rem/unit {
+		return fmt.Errorf("plist: declared object size (%d) exceeds remaining input", count)
+	}
+	return nil
 }
