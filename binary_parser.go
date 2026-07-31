@@ -29,6 +29,7 @@ type binaryParser struct {
 	inProgress    map[uint64]bool // indices currently on the recursion stack (cycle detection)
 	depth         int             // current recursion depth
 	nodes         int             // total materialized objects so far (expansion budget)
+	bytes         uint64          // total data/string bytes materialized so far (size budget)
 }
 
 // maxObjectDepth bounds binary-plist reference nesting to prevent
@@ -38,6 +39,20 @@ const maxObjectDepth = 128
 // maxObjectNodes bounds the TOTAL number of objects materialized while
 // decoding, defeating exponential-expansion inputs.
 var maxObjectNodes = 1 << 21 // ~2.1M
+
+// headerSize is the fixed "bplist00" magic; trailerSize is the fixed 32-byte
+// trailer. Object offsets live in [headerSize, OffsetTableOffset).
+const (
+	headerSize  = 8
+	trailerSize = 32
+)
+
+// maxObjectBytes bounds the TOTAL bytes materialized into data and string
+// objects while decoding. maxObjectNodes bounds object COUNT; this bounds their
+// aggregate SIZE, so a small input that references a large object many times
+// (byte amplification) cannot be inflated into unbounded memory the node budget
+// alone would not catch.
+var maxObjectBytes uint64 = 1 << 26 // 64MB
 
 // newBinaryParser takes in a ReadSeeker for the bytes of a binary plist and
 // returns a parser after reading the offset table and trailer.
@@ -64,10 +79,21 @@ func newBinaryParser(r io.ReadSeeker) (*binaryParser, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Offsets live in [OffsetTableOffset, fileLen-trailerSize); each is OffsetIntSize bytes.
-	if bp.OffsetTableOffset > uint64(fileLen) ||
-		bp.NumObjects > (uint64(fileLen)-bp.OffsetTableOffset)/uint64(bp.OffsetIntSize) {
+	// The offset table lives after the header and before the trailer.
+	if bp.OffsetTableOffset < headerSize || bp.OffsetTableOffset > uint64(fileLen)-trailerSize {
+		return nil, fmt.Errorf("plist: offset table offset (%d) out of range", bp.OffsetTableOffset)
+	}
+	// The table holds NumObjects entries of OffsetIntSize bytes each and must fit
+	// between the object region and the trailer.
+	if bp.NumObjects > (uint64(fileLen)-trailerSize-bp.OffsetTableOffset)/uint64(bp.OffsetIntSize) {
 		return nil, fmt.Errorf("plist: NumObjects (%d) exceeds available data", bp.NumObjects)
+	}
+	// Every object occupies at least its 1-byte marker in the object region
+	// [headerSize, OffsetTableOffset), so there cannot be more objects than
+	// object-region bytes. This bounds the offset-table allocation below to the
+	// file size regardless of the OffsetIntSize amplification factor.
+	if bp.NumObjects > bp.OffsetTableOffset-headerSize {
+		return nil, fmt.Errorf("plist: NumObjects (%d) exceeds object region", bp.NumObjects)
 	}
 	if bp.RootObject >= bp.NumObjects {
 		return nil, fmt.Errorf("plist: root object ref out of range")
@@ -81,10 +107,16 @@ func newBinaryParser(r io.ReadSeeker) (*binaryParser, error) {
 	bp.OffsetTable = make([]uint64, bp.NumObjects)
 	for i := uint64(0); i < bp.NumObjects; i++ {
 		buf := make([]byte, 8)
-		if _, err := bp.Read(buf[8-bp.OffsetIntSize:]); err != nil {
+		if _, err := io.ReadFull(bp, buf[8-bp.OffsetIntSize:]); err != nil {
 			return nil, fmt.Errorf("plist: couldn't read offset table: %v", err)
 		}
-		bp.OffsetTable[i] = uint64(binary.BigEndian.Uint64(buf))
+		// Each entry must point into the object region; a scalar object at an
+		// out-of-region offset would otherwise decode to silent garbage.
+		off := binary.BigEndian.Uint64(buf)
+		if off < headerSize || off >= bp.OffsetTableOffset {
+			return nil, fmt.Errorf("plist: object offset %d out of range", off)
+		}
+		bp.OffsetTable[i] = off
 	}
 
 	bp.inProgress = make(map[uint64]bool)
@@ -281,7 +313,7 @@ func (bp *binaryParser) parseInteger(marker byte) (*plistValue, error) {
 	}
 	// Read into the right-most bytes of a 16-byte zero-valued buffer.
 	buf := make([]byte, 16)
-	_, err := bp.Read(buf[16-nbytes:])
+	_, err := io.ReadFull(bp, buf[16-nbytes:])
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +331,7 @@ func (bp *binaryParser) parseReal(marker byte) (*plistValue, error) {
 		return nil, fmt.Errorf("plist: real longer than 8 bytes (%d)", nbytes)
 	}
 	buf := make([]byte, nbytes)
-	if _, err := bp.Read(buf); err != nil {
+	if _, err := io.ReadFull(bp, buf); err != nil {
 		return nil, err
 	}
 	var r float64
@@ -314,7 +346,7 @@ func (bp *binaryParser) parseDate(marker byte) (*plistValue, error) {
 		return nil, fmt.Errorf("plist: invalid marker byte for date: %x", marker)
 	}
 	buf := make([]byte, 8)
-	if _, err := bp.Read(buf); err != nil {
+	if _, err := io.ReadFull(bp, buf); err != nil {
 		return nil, err
 	}
 	var t float64
@@ -335,10 +367,23 @@ func (bp *binaryParser) parseUID(marker byte) (*plistValue, error) {
 		return nil, fmt.Errorf("plist: UID too large: %d bytes", nbytes)
 	}
 	buf := make([]byte, 8)
-	if _, err := bp.Read(buf[8-nbytes:]); err != nil {
+	if _, err := io.ReadFull(bp, buf[8-nbytes:]); err != nil {
 		return nil, err
 	}
 	return &plistValue{CFUID, UID(binary.BigEndian.Uint64(buf))}, nil
+}
+
+// accountBytes adds n to the running total of bytes materialized into data and
+// string objects and rejects the document once it exceeds maxObjectBytes. The
+// node budget bounds how many objects are decoded; this bounds their aggregate
+// size, so a small input referencing a large object many times cannot be
+// amplified into unbounded memory.
+func (bp *binaryParser) accountBytes(n uint64) error {
+	bp.bytes += n
+	if bp.bytes > maxObjectBytes {
+		return fmt.Errorf("plist: decoded data exceeds maximum size (%d bytes)", maxObjectBytes)
+	}
+	return nil
 }
 
 func (bp *binaryParser) parseData(marker byte) (*plistValue, error) {
@@ -349,8 +394,11 @@ func (bp *binaryParser) parseData(marker byte) (*plistValue, error) {
 	if err := bp.checkCount(count, 1); err != nil {
 		return nil, err
 	}
+	if err := bp.accountBytes(count); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, count)
-	if _, err := bp.Read(buf); err != nil {
+	if _, err := io.ReadFull(bp, buf); err != nil {
 		return nil, err
 	}
 	return &plistValue{Data, buf}, nil
@@ -364,8 +412,11 @@ func (bp *binaryParser) parseASCII(marker byte) (*plistValue, error) {
 	if err := bp.checkCount(count, 1); err != nil {
 		return nil, err
 	}
+	if err := bp.accountBytes(count); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, count)
-	if _, err := bp.Read(buf); err != nil {
+	if _, err := io.ReadFull(bp, buf); err != nil {
 		return nil, err
 	}
 	return &plistValue{String, string(buf)}, nil
@@ -379,11 +430,14 @@ func (bp *binaryParser) parseUTF16(marker byte) (*plistValue, error) {
 	if err := bp.checkCount(count, 2); err != nil {
 		return nil, err
 	}
+	if err := bp.accountBytes(2 * count); err != nil {
+		return nil, err
+	}
 	// Each character in the UTF16 string is 2 bytes.  First we read everything
 	// into a byte slice, then convert this into a slice of uint16, then this
 	// gets converted into a slice of rune, which gets converted to a string.
 	buf := make([]byte, 2*count)
-	if _, err := bp.Read(buf); err != nil {
+	if _, err := io.ReadFull(bp, buf); err != nil {
 		return nil, err
 	}
 	uni := make([]uint16, count)
@@ -457,7 +511,7 @@ func (bp *binaryParser) readCount(marker byte) (uint64, error) {
 	}
 	buf := make([]byte, 8)
 	// Shove these bytes into the low end of an 8-byte buffer.
-	if _, err := bp.Read(buf[8-nbytes:]); err != nil {
+	if _, err := io.ReadFull(bp, buf[8-nbytes:]); err != nil {
 		return 0, err
 	}
 	return binary.BigEndian.Uint64(buf), nil
@@ -467,7 +521,7 @@ func (bp *binaryParser) readCount(marker byte) (uint64, error) {
 // and returns the bytes decoded into an integer value.
 func (bp *binaryParser) readObjectRef() (uint64, error) {
 	buf := make([]byte, 8)
-	if _, err := bp.Read(buf[8-bp.ObjectRefSize:]); err != nil {
+	if _, err := io.ReadFull(bp, buf[8-bp.ObjectRefSize:]); err != nil {
 		return 0, err
 	}
 	return binary.BigEndian.Uint64(buf), nil

@@ -1,7 +1,9 @@
 package plist
 
 import (
+	"bytes"
 	"encoding/binary"
+	"io"
 	"strings"
 	"testing"
 )
@@ -118,6 +120,115 @@ func TestBinaryParserHugeObjectRefSize(t *testing.T) {
 	var out interface{}
 	if err := Unmarshal(data, &out); err == nil {
 		t.Fatal("want error, got nil")
+	}
+}
+
+// Byte amplification: a small array whose many refs all point at one large
+// object. The node budget (object COUNT) never trips, but the aggregate SIZE
+// budget must, so the decode cannot be inflated into unbounded memory.
+func TestBinaryParserByteAmplification(t *testing.T) {
+	defer func(n uint64) { maxObjectBytes = n }(maxObjectBytes)
+	maxObjectBytes = 25
+
+	// obj0: array of 5 refs, all -> obj1. obj1: a 10-byte string.
+	// Re-materializing obj1 five times is 50 bytes > the 25-byte budget.
+	data := buildBinaryPlist([][]byte{
+		arrayObj([]uint64{1, 1, 1, 1, 1}, 1),
+		asciiObj("0123456789"),
+	}, 0, 1)
+
+	var out interface{}
+	err := Unmarshal(data, &out)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("want size-budget error, got %v", err)
+	}
+}
+
+// An offset-table entry that points outside the object region must be rejected.
+// A scalar object at such an offset would otherwise decode to silent garbage
+// (it never reaches the checkCount guard that catches collections/strings).
+func TestBinaryParserOffsetOutOfRange(t *testing.T) {
+	data := buildBinaryPlist([][]byte{asciiObj("x")}, 0, 1)
+	// OffsetTableOffset is the trailer's last 8 bytes; offset entry 0 sits there
+	// (buildBinaryPlist writes 8-byte offsets). Point it at the table itself.
+	otoff := binary.BigEndian.Uint64(data[len(data)-8:])
+	binary.BigEndian.PutUint64(data[otoff:otoff+8], otoff)
+	var out interface{}
+	err := Unmarshal(data, &out)
+	if err == nil || !strings.Contains(err.Error(), "out of range") {
+		t.Fatalf("want offset-out-of-range error, got %v", err)
+	}
+}
+
+// NumObjects inflated past the object region (more objects than bytes that can
+// hold their markers) must be rejected before the offset table is allocated,
+// even when NumObjects still fits the raw file (the make([]uint64, N) OOM path).
+func TestBinaryParserNumObjectsExceedsObjectRegion(t *testing.T) {
+	// Hand-built: 8-byte header, one 1-byte object (bool true) at offset 8, then
+	// a 100-entry 1-byte offset table, then the trailer. NumObjects=100 fits the
+	// file but far exceeds the 1-byte object region.
+	const numObjects = 100
+	buf := []byte("bplist00")
+	buf = append(buf, 0x09) // object 0: boolean true, at offset 8
+	otoff := uint64(len(buf))
+	for i := 0; i < numObjects; i++ {
+		buf = append(buf, 8) // every 1-byte offset -> the boolean at offset 8
+	}
+	var tr [32]byte
+	tr[6] = 1 // OffsetIntSize
+	tr[7] = 1 // ObjectRefSize
+	binary.BigEndian.PutUint64(tr[8:16], numObjects)
+	binary.BigEndian.PutUint64(tr[16:24], 0) // RootObject
+	binary.BigEndian.PutUint64(tr[24:32], otoff)
+	buf = append(buf, tr[:]...)
+
+	var out interface{}
+	err := Unmarshal(buf, &out)
+	if err == nil || !strings.Contains(err.Error(), "exceeds object region") {
+		t.Fatalf("want object-region error, got %v", err)
+	}
+}
+
+// oneByteReader wraps an io.ReadSeeker but returns at most one byte per Read,
+// which io.Reader permits. It models a streaming/custom ReadSeeker (not a
+// bytes.Reader) to prove multi-byte fields are read with io.ReadFull rather than
+// a single Read that would silently zero-fill the unread tail.
+type oneByteReader struct{ rs io.ReadSeeker }
+
+func (r oneByteReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return r.rs.Read(p[:1])
+}
+
+func (r oneByteReader) Seek(offset int64, whence int) (int64, error) {
+	return r.rs.Seek(offset, whence)
+}
+
+// A valid plist must decode correctly even through a reader that never fills a
+// multi-byte buffer in one call: 8-byte offsets, the 2-byte integer, and the
+// multi-char strings all depend on the full buffer being read.
+func TestBinaryParserShortReads(t *testing.T) {
+	objs := [][]byte{
+		{0xd2, 1, 2, 3, 4}, // dict: key refs 1,2; value refs 3,4 (refSize 1)
+		asciiObj("num"),    // key 0
+		asciiObj("str"),    // key 1
+		{0x11, 0x01, 0x02}, // integer 258, encoded in 2 bytes
+		asciiObj("hello"),  // value 1
+	}
+	data := buildBinaryPlist(objs, 0, 1)
+
+	var out struct {
+		Num int    `plist:"num"`
+		Str string `plist:"str"`
+	}
+	dec := NewBinaryDecoder(oneByteReader{bytes.NewReader(data)})
+	if err := dec.Decode(&out); err != nil {
+		t.Fatalf("decode through short reader failed: %v", err)
+	}
+	if out.Num != 258 || out.Str != "hello" {
+		t.Fatalf("decoded wrong through short reader: %+v", out)
 	}
 }
 
