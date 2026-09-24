@@ -1,0 +1,13 @@
+float32.binary.plist — CF-generated fixture for issue #38 / PR #39.
+
+Contains {"float32key": float32(3.14), "float64key": float64(3.14159)}
+as binary plist: one 0x22 (4-byte) real and one 0x23 (8-byte) real.
+Stock plistlib always writes float64, so this was generated with
+CoreFoundation on macOS. Generation sketch:
+
+  CFNumberRef f32 = CFNumberCreate(NULL, kCFNumberFloat32Type, &(float){3.14f});
+  CFNumberRef f64 = CFNumberCreate(NULL, kCFNumberFloat64Type, &(double){3.14159});
+  CFDictionarySetValue(dict, CFSTR("float32key"), f32);
+  CFDictionarySetValue(dict, CFSTR("float64key"), f64);
+  CFDataRef data = CFPropertyListCreateData(NULL, dict,
+      kCFPropertyListBinaryFormat_v1_0, 0, NULL); // -> write to file

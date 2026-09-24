@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -267,3 +269,37 @@ func arrayObj(refs []uint64, refSize uint8) []byte {
 
 // asciiObj encodes a short (<15 char) ASCII string object.
 func asciiObj(s string) []byte { return append([]byte{0x50 | byte(len(s))}, s...) }
+
+// TestBinaryReal4ByteTestdata decodes testdata/float32.binary.plist (see
+// float32.binary.plist.txt alongside it for provenance).
+func TestBinaryReal4ByteTestdata(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "float32.binary.plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var v struct {
+		Float32Key float32 `plist:"float32key"`
+		Float64Key float64 `plist:"float64key"`
+	}
+	if err := Unmarshal(data, &v); err != nil {
+		t.Fatalf("testdata float32.binary.plist: Unmarshal failed (issue #38): %v", err)
+	}
+	if want := float32(3.14); v.Float32Key != want {
+		t.Fatalf("float32key: got %v, want %v", v.Float32Key, want)
+	}
+	if want := 3.14159; v.Float64Key != want {
+		t.Fatalf("float64key: got %v, want %v", v.Float64Key, want)
+	}
+
+	var m map[string]interface{}
+	if err := Unmarshal(data, &m); err != nil {
+		t.Fatalf("testdata into map: %v", err)
+	}
+	if _, ok := m["float32key"].(float32); !ok {
+		t.Fatalf("float32key into interface{}: got %T (%v), want float32", m["float32key"], m["float32key"])
+	}
+	if _, ok := m["float64key"].(float64); !ok {
+		t.Fatalf("float64key into interface{}: got %T (%v), want float64", m["float64key"], m["float64key"])
+	}
+}
