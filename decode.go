@@ -257,34 +257,52 @@ func (d *Decoder) unmarshalString(pval *plistValue, v reflect.Value) error {
 
 func (d *Decoder) unmarshalArray(pval *plistValue, v reflect.Value) error {
 	subvalues := pval.value.([]*plistValue)
-	switch v.Kind() {
-	case reflect.Slice:
-		// Slice of element values.
-		// Grow slice.
-		// Borrowed from https://golang.org/src/encoding/xml/read.go
-		cnt := len(subvalues)
-		if cnt >= v.Cap() {
-			ncap := 2 * cnt
-			if ncap < 4 {
-				ncap = 4
-			}
-			new := reflect.MakeSlice(v.Type(), v.Len(), ncap)
-			reflect.Copy(new, v)
-			v.Set(new)
-		}
-		n := v.Len()
-		v.SetLen(cnt)
-		for _, sval := range subvalues {
-			if err := d.unmarshal(sval, v.Index(n)); err != nil {
-				v.SetLen(cnt)
-				return err
-			}
-			n++
-		}
-	default:
+	if v.Kind() != reflect.Slice {
 		return UnmarshalTypeError{"array", v.Type()}
 	}
+
+	// Decoding replaces the destination's contents, so the result holds
+	// exactly the document's elements regardless of what was there before.
+	// Reuse the existing backing array when it is already big enough.
+	cnt := len(subvalues)
+	reused := true
+	if cnt > v.Cap() {
+		ncap := v.Cap()
+		for ncap < cnt {
+			ncap = growSliceCap(ncap)
+		}
+		v.Set(reflect.MakeSlice(v.Type(), 0, ncap))
+		reused = false
+	}
+	v.SetLen(cnt)
+
+	zero := reflect.Zero(v.Type().Elem())
+	for i, sval := range subvalues {
+		if reused {
+			// Clear whatever the caller left behind. Unmarshaling assigns only
+			// the keys present in the document, so a reused element would
+			// otherwise merge its stale fields into the result.
+			v.Index(i).Set(zero)
+		}
+		if err := d.unmarshal(sval, v.Index(i)); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// growSliceCap returns the next capacity to try when growing a slice to hold a
+// decoded array, following the same shape as the runtime's append: double while
+// small, then taper off.
+func growSliceCap(cap int) int {
+	switch {
+	case cap == 0:
+		return 4
+	case cap < 1024:
+		return cap * 2
+	default:
+		return cap + cap/4
+	}
 }
 
 func (d *Decoder) unmarshalInteger(pval *plistValue, v reflect.Value) error {

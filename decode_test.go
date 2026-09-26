@@ -480,6 +480,102 @@ func TestFuzzCrashers(t *testing.T) {
 	}
 }
 
+// arrayDoc wraps array elements in a complete XML plist document.
+func arrayDoc(elements string) []byte {
+	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><array>` + elements + `</array></plist>`)
+}
+
+// TestDecodeArrayIntoPopulatedSlice checks that decoding into a slice that
+// already has elements replaces its contents. The destination's prior length
+// must not affect where elements land or how many survive.
+func TestDecodeArrayIntoPopulatedSlice(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		elements string
+		dst      []string
+		expected []string
+	}{
+		{
+			name:     "shorter than destination",
+			elements: `<string>x</string>`,
+			dst:      []string{"pre1", "pre2", "pre3"},
+			expected: []string{"x"},
+		},
+		{
+			name:     "same length as destination",
+			elements: `<string>x</string><string>y</string>`,
+			dst:      []string{"pre1", "pre2"},
+			expected: []string{"x", "y"},
+		},
+		{
+			name:     "longer than destination",
+			elements: `<string>x</string><string>y</string><string>z</string>`,
+			dst:      []string{"pre1"},
+			expected: []string{"x", "y", "z"},
+		},
+		{
+			name:     "empty array clears destination",
+			elements: ``,
+			dst:      []string{"pre1", "pre2"},
+			expected: []string{},
+		},
+		{
+			name:     "spare capacity is reused",
+			elements: `<string>x</string><string>y</string>`,
+			dst:      make([]string, 0, 10),
+			expected: []string{"x", "y"},
+		},
+		{
+			name:     "nil destination",
+			elements: `<string>x</string>`,
+			dst:      nil,
+			expected: []string{"x"},
+		},
+	} {
+		tc := tt
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dst := tc.dst
+			if err := Unmarshal(arrayDoc(tc.elements), &dst); err != nil {
+				t.Fatal(err)
+			}
+			if len(dst) != len(tc.expected) {
+				t.Fatalf("got len %d (%v), want len %d (%v)", len(dst), dst, len(tc.expected), tc.expected)
+			}
+			for i := range tc.expected {
+				if dst[i] != tc.expected[i] {
+					t.Errorf("index %d: got %q, want %q", i, dst[i], tc.expected[i])
+				}
+			}
+		})
+	}
+}
+
+// TestDecodeArrayReplacesStaleElements checks that an element left over in the
+// destination slice cannot leak fields into the decoded result. Struct decoding
+// only assigns keys that are present in the document, so a reused element has
+// to be cleared first.
+func TestDecodeArrayReplacesStaleElements(t *testing.T) {
+	t.Parallel()
+	type entry struct {
+		A string
+		B string
+	}
+
+	dst := []entry{{A: "stale-a", B: "stale-b"}}
+	if err := Unmarshal(arrayDoc(`<dict><key>A</key><string>new-a</string></dict>`), &dst); err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []entry{{A: "new-a"}}
+	if !reflect.DeepEqual(dst, expected) {
+		t.Errorf("got %+v, want %+v", dst, expected)
+	}
+}
+
 func TestSmallInput(t *testing.T) {
 	type nop struct{}
 	nopStruct := &nop{}

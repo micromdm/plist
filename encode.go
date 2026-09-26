@@ -2,6 +2,7 @@ package plist
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"reflect"
 	"time"
@@ -9,6 +10,48 @@ import (
 
 type Marshaler interface {
 	MarshalPlist() (interface{}, error)
+}
+
+// nilReceiver reports whether invoking a method on m would run it against a
+// nil pointer receiver. Addr-derived receivers are never nil, so this only
+// matters for values unboxed from an interface.
+func nilReceiver(m Marshaler) bool {
+	rv := reflect.ValueOf(m)
+	return rv.Kind() == reflect.Ptr && rv.IsNil()
+}
+
+// isIndirect reports whether v wraps another value that can be reached with
+// Elem: a pointer, or an empty interface. Non-empty interfaces are excluded
+// because a value satisfying one may implement Marshaler itself.
+func isIndirect(v reflect.Value) bool {
+	return v.Kind() == reflect.Ptr || (v.Kind() == reflect.Interface && v.NumMethod() == 0)
+}
+
+// asMarshaler reports whether v, or a pointer to it, implements Marshaler.
+//
+// The check is made against the value's dynamic type rather than its static
+// one, so that a Marshaler held in an interface{} — as a struct field, a slice
+// element or a map value — is still found. Testing the static type would see
+// only the empty interface, which implements nothing, and the value would be
+// silently encoded by reflection instead.
+func asMarshaler(v reflect.Value) (Marshaler, bool) {
+	if v.CanInterface() {
+		// Unboxing an interface can hand back a typed nil pointer, which
+		// satisfies Marshaler but would run the method against a nil receiver.
+		// Report no marshaler and let the caller's nil handling take over once
+		// it has descended far enough to see the pointer.
+		if m, ok := v.Interface().(Marshaler); ok && !nilReceiver(m) {
+			return m, true
+		}
+	}
+	if v.CanAddr() {
+		if pv := v.Addr(); pv.CanInterface() {
+			if m, ok := pv.Interface().(Marshaler); ok {
+				return m, true
+			}
+		}
+	}
+	return nil, false
 }
 
 // Encoder ...
@@ -49,6 +92,12 @@ func (e *Encoder) Encode(v interface{}) error {
 	if err != nil {
 		return err
 	}
+	// Nested nils are dropped by their container, but a nil root has no
+	// container to drop it, and an empty <plist> is not a document this
+	// package can read back.
+	if pval == nil {
+		return &UnsupportedValueError{reflect.ValueOf(v), "nil"}
+	}
 
 	enc := newXMLEncoder(e.w)
 	enc.indent = e.indent
@@ -61,32 +110,64 @@ func (e *Encoder) Indent(indent string) {
 	e.indent = indent
 }
 
+// marshal converts v into a plistValue. A nil pointer or interface has no
+// property list representation, so it yields a nil plistValue and no error;
+// callers decide what to do with it.
 func (e *Encoder) marshal(v reflect.Value) (*plistValue, error) {
-	marshalerType := reflect.TypeOf((*Marshaler)(nil)).Elem()
-
-	if v.CanInterface() && v.Type().Implements(marshalerType) {
-		m := v.Interface().(Marshaler)
-		val, err := m.MarshalPlist()
-		if err != nil {
-			return nil, err
-		}
-		return e.marshal(reflect.ValueOf(val))
+	// A nil interface reaches us as the zero Value, which has no type to
+	// inspect.
+	if !v.IsValid() {
+		return nil, nil
 	}
 
-	if v.CanAddr() {
-		pv := v.Addr()
-		if pv.CanInterface() && pv.Type().Implements(marshalerType) {
-			m := pv.Interface().(Marshaler)
+	// Descend through empty interfaces and pointers to the concrete value they
+	// hold, looking for a Marshaler at every level on the way down. One level
+	// is not enough: a **T or an *interface{} only reveals the type that
+	// implements Marshaler once it has been unwrapped, and a pointer left
+	// unwrapped is something the switch below cannot encode.
+	var seen map[uintptr]struct{}
+	for {
+		if isIndirect(v) && v.IsNil() {
+			// Nothing to encode. Returning before the Marshaler check is
+			// deliberate: a nil *T still satisfies the interface, so calling
+			// MarshalPlist here would run the method against a nil receiver.
+			// encoding/json short-circuits nil pointers the same way.
+			return nil, nil
+		}
+
+		if m, ok := asMarshaler(v); ok {
 			val, err := m.MarshalPlist()
 			if err != nil {
 				return nil, err
 			}
 			return e.marshal(reflect.ValueOf(val))
 		}
-	}
 
-	// check for empty interface v type
-	if v.Kind() == reflect.Interface && v.NumMethod() == 0 || v.Kind() == reflect.Ptr {
+		if !isIndirect(v) {
+			break
+		}
+		if v.Kind() == reflect.Ptr {
+			// A self-referential pointer (e.g. var v interface{}; v = &v)
+			// never reaches a terminal value. A chain that revisits an
+			// address is a cycle, so report it instead of looping forever.
+			// An UnsupportedValueError matches encoding/json, which
+			// reports "encountered a cycle via %s" the same way: the type
+			// itself is encodable, the value is not.
+			//
+			// Note: this guards the indirection chain only. Cycles back
+			// through containers (a map or slice containing itself) still
+			// recurse; that predates this change and is left for a
+			// follow-up.
+			if ptr := v.Pointer(); ptr != 0 {
+				if _, dup := seen[ptr]; dup {
+					return nil, &UnsupportedValueError{v, fmt.Sprintf("encountered a cycle via %s", v.Type())}
+				}
+				if seen == nil {
+					seen = make(map[uintptr]struct{})
+				}
+				seen[ptr] = struct{}{}
+			}
+		}
 		v = v.Elem()
 	}
 
@@ -135,9 +216,14 @@ func (e *Encoder) marshalStruct(v reflect.Value) (*plistValue, error) {
 		if field.omitEmpty && isEmptyValue(val) {
 			continue
 		}
-		value, err := e.marshal(field.value(v))
+		value, err := e.marshal(val)
 		if err != nil {
 			return nil, err
+		}
+		if value == nil {
+			// A nil field has no property list representation; an absent key
+			// is the closest equivalent.
+			continue
 		}
 		dict.m[field.name] = value
 	}
@@ -161,9 +247,16 @@ func (e *Encoder) marshalArray(v reflect.Value) (*plistValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		if subpval != nil {
-			subvalues[idx] = subpval
+		if subpval == nil {
+			// A property list has no null. Unlike a dictionary key, an array
+			// element cannot be left out without shifting every later index,
+			// so report it rather than quietly returning a shorter array.
+			return nil, &UnsupportedValueError{
+				v.Index(idx),
+				fmt.Sprintf("nil at array index %d", idx),
+			}
 		}
+		subvalues[idx] = subpval
 	}
 	return &plistValue{Array, subvalues}, nil
 }
