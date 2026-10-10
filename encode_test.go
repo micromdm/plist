@@ -671,6 +671,16 @@ func TestMarshalNilValue(t *testing.T) {
 			in:   map[string]interface{}{"a": (*string)(nil), "b": "x"},
 			out:  xmlDoc(`<dict><key>b</key><string>x</string></dict>`),
 		},
+		{
+			name: "nil nested struct pointer",
+			in:   struct{ Inner *struct{ S *string } }{},
+			out:  xmlDoc(`<dict></dict>`),
+		},
+		{
+			name: "nested struct with nil field",
+			in:   struct{ Inner struct{ S *string } }{},
+			out:  xmlDoc(`<dict><key>Inner</key><dict></dict></dict>`),
+		},
 	} {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
