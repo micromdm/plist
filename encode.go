@@ -59,6 +59,59 @@ type Encoder struct {
 	w io.Writer
 
 	indent string
+
+	// ptrLevel is how deep marshal has recursed, and ptrSeen the pointers,
+	// maps and slices on the current path once it's past
+	// startDetectingCyclesAfter. See enter.
+	ptrLevel uint
+	ptrSeen  map[refKey]struct{}
+}
+
+// startDetectingCyclesAfter is the marshal depth past which the encoder starts
+// tracking references to detect cycles, the same threshold as encoding/json.
+// Below it, ordinary values pay nothing for the check.
+const startDetectingCyclesAfter = 1000
+
+// refKey identifies the memory behind a pointer, map or slice. A slice also
+// needs its length: s[:1] shares s's pointer but isn't s.
+type refKey struct {
+	ptr uintptr
+	len int
+}
+
+func refKeyOf(v reflect.Value) refKey {
+	k := refKey{ptr: v.Pointer()}
+	if v.Kind() == reflect.Slice {
+		k.len = v.Len()
+	}
+	return k
+}
+
+// enter marks v, a pointer, map or slice, as being on the current path, and
+// reports a cycle if it already is. A property list is a tree, so a value that
+// contains itself has no representation, and recursing into it would overflow
+// the stack, which is fatal rather than a recoverable panic. On success, pair
+// it with a deferred leave.
+func (e *Encoder) enter(v reflect.Value) error {
+	if e.ptrLevel <= startDetectingCyclesAfter {
+		return nil
+	}
+	k := refKeyOf(v)
+	if _, dup := e.ptrSeen[k]; dup {
+		return &UnsupportedValueError{v, fmt.Sprintf("encountered a cycle via %s", v.Type())}
+	}
+	if e.ptrSeen == nil {
+		e.ptrSeen = make(map[refKey]struct{})
+	}
+	e.ptrSeen[k] = struct{}{}
+	return nil
+}
+
+// leave undoes a successful enter.
+func (e *Encoder) leave(v reflect.Value) {
+	if e.ptrLevel > startDetectingCyclesAfter {
+		delete(e.ptrSeen, refKeyOf(v))
+	}
 }
 
 // Marshal ...
@@ -120,6 +173,9 @@ func (e *Encoder) marshal(v reflect.Value) (*plistValue, error) {
 		return nil, nil
 	}
 
+	e.ptrLevel++
+	defer func() { e.ptrLevel-- }()
+
 	// Descend through empty interfaces and pointers to the concrete value they
 	// hold, looking for a Marshaler at every level on the way down. One level
 	// is not enough: a **T or an *interface{} only reveals the type that
@@ -154,10 +210,9 @@ func (e *Encoder) marshal(v reflect.Value) (*plistValue, error) {
 			// reports "encountered a cycle via %s" the same way: the type
 			// itself is encodable, the value is not.
 			//
-			// Note: this guards the indirection chain only. Cycles back
-			// through containers (a map or slice containing itself) still
-			// recurse; that predates this change and is left for a
-			// follow-up.
+			// This guards the chain within one call, which never recurses.
+			// A cycle that comes back through a struct field, map or slice
+			// recurses instead, and enter catches it.
 			if ptr := v.Pointer(); ptr != 0 {
 				if _, dup := seen[ptr]; dup {
 					return nil, &UnsupportedValueError{v, fmt.Sprintf("encountered a cycle via %s", v.Type())}
@@ -167,8 +222,19 @@ func (e *Encoder) marshal(v reflect.Value) (*plistValue, error) {
 				}
 				seen[ptr] = struct{}{}
 			}
+			if err := e.enter(v); err != nil {
+				return nil, err
+			}
+			defer e.leave(v)
 		}
 		v = v.Elem()
+	}
+
+	if v.Kind() == reflect.Map || v.Kind() == reflect.Slice {
+		if err := e.enter(v); err != nil {
+			return nil, err
+		}
+		defer e.leave(v)
 	}
 
 	// check for time type
@@ -213,6 +279,10 @@ func (e *Encoder) marshalStruct(v reflect.Value) (*plistValue, error) {
 	}
 	for _, field := range fields {
 		val := field.value(v)
+		if !val.IsValid() {
+			// Promoted through a nil embedded pointer.
+			continue
+		}
 		if field.omitEmpty && isEmptyValue(val) {
 			continue
 		}

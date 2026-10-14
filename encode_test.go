@@ -3,6 +3,7 @@ package plist
 import (
 	"bytes"
 	"errors"
+	"io/ioutil"
 	"testing"
 	"time"
 )
@@ -812,21 +813,208 @@ func marshalNoHang(t *testing.T, in interface{}) error {
 	}
 }
 
-// TestMarshalCyclicValue checks that a self-referential pointer reports an
-// error instead of hanging the encoder. A property list is a tree, so a
-// value that never resolves has no representation.
-//
-// Note: this guards the pointer/interface descent only. Cycles back through
-// containers (a map or slice containing itself) still recurse; that predates
-// the descent loop and is left for a follow-up.
+type cyclicNode struct {
+	Next *cyclicNode
+}
+
+type cyclicHolder struct {
+	Items []interface{}
+}
+
+// TestMarshalCyclicValue checks that a value that contains itself reports an
+// error instead of hanging the encoder or overflowing the stack. A property
+// list is a tree, so a value that never resolves has no representation.
 func TestMarshalCyclicValue(t *testing.T) {
 	t.Parallel()
 
-	var v interface{}
-	v = &v
-	err := marshalNoHang(t, v)
-	var uve *UnsupportedValueError
-	if !errors.As(err, &uve) {
-		t.Errorf("Marshal(self-referential interface) err = %v (%T), want *UnsupportedValueError", err, err)
+	selfIface := func() interface{} { var v interface{}; v = &v; return v }
+	selfMap := func() interface{} { m := map[string]interface{}{}; m["k"] = m; return m }
+	selfSlice := func() interface{} { s := []interface{}{nil}; s[0] = s; return s }
+	selfNode := func() interface{} { n := &cyclicNode{}; n.Next = n; return n }
+	nodeLoop := func() interface{} { a, b := &cyclicNode{}, &cyclicNode{}; a.Next, b.Next = b, a; return a }
+	throughStruct := func() interface{} { h := &cyclicHolder{}; h.Items = []interface{}{h}; return h }
+	deepThenCycle := func() interface{} {
+		// A cycle that only starts past the detection threshold.
+		m := map[string]interface{}{}
+		m["k"] = m
+		var v interface{} = m
+		for i := 0; i < 2*startDetectingCyclesAfter; i++ {
+			v = []interface{}{v}
+		}
+		return v
 	}
+
+	for _, tt := range []struct {
+		name string
+		in   func() interface{}
+	}{
+		{"self-referential interface", selfIface},
+		{"map containing itself", selfMap},
+		{"slice containing itself", selfSlice},
+		{"struct pointer to itself", selfNode},
+		{"two struct pointers", nodeLoop},
+		{"through struct field and slice", throughStruct},
+		{"deep then cycle", deepThenCycle},
+	} {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := marshalNoHang(t, tt.in())
+			var uve *UnsupportedValueError
+			if !errors.As(err, &uve) {
+				t.Errorf("Marshal(%s) err = %v (%T), want *UnsupportedValueError", tt.name, err, err)
+			}
+		})
+	}
+}
+
+// TestMarshalSharedAndDeepValues checks that cycle detection doesn't reject
+// values that merely repeat a reference or nest deeply: only a reference back
+// to something on the current path is a cycle.
+func TestMarshalSharedAndDeepValues(t *testing.T) {
+	t.Parallel()
+
+	deep := func(inner interface{}) interface{} {
+		v := inner
+		for i := 0; i < 2*startDetectingCyclesAfter; i++ {
+			v = []interface{}{v}
+		}
+		return v
+	}
+	shared := map[string]interface{}{"s": "x"}
+	sharedNode := &cyclicNode{}
+
+	for _, tt := range []struct {
+		name string
+		in   interface{}
+	}{
+		{"map shared by siblings", map[string]interface{}{"a": shared, "b": shared}},
+		{"pointer shared by siblings", []interface{}{sharedNode, sharedNode}},
+		{"deep nesting", deep("x")},
+		{"deep nesting then shared", deep([]interface{}{shared, shared})},
+	} {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := marshalNoHang(t, tt.in); err != nil {
+				t.Errorf("Marshal(%s) err = %v, want nil", tt.name, err)
+			}
+		})
+	}
+
+	t.Run("encoder reusable after a cycle", func(t *testing.T) {
+		t.Parallel()
+		enc := NewEncoder(ioutil.Discard)
+		m := map[string]interface{}{}
+		m["k"] = m
+		if err := enc.Encode(deep(m)); err == nil {
+			t.Fatal("Encode(cycle) succeeded, want error")
+		}
+		if enc.ptrLevel != 0 || len(enc.ptrSeen) != 0 {
+			t.Errorf("after a failed Encode, ptrLevel = %d and ptrSeen has %d entries, want 0 and 0", enc.ptrLevel, len(enc.ptrSeen))
+		}
+		if err := enc.Encode(deep([]interface{}{shared, shared})); err != nil {
+			t.Errorf("Encode after a failed Encode: %v", err)
+		}
+	})
+}
+
+type EmbeddedInner struct{ S2 string }
+type embeddedUnexported struct{ S3 string }
+
+type EmbeddedOuter struct {
+	S string
+	*EmbeddedInner
+}
+
+type embeddedOuterOmit struct {
+	S              string
+	*EmbeddedInner `plist:",omitempty"`
+}
+
+type embeddedOuterUnexported struct {
+	S string
+	*embeddedUnexported
+}
+
+type embeddedDeep struct {
+	S2 string
+	*EmbeddedOuter
+}
+
+// TestMarshalNilEmbeddedPointer checks that fields promoted through a nil
+// embedded struct pointer are left out, as in encoding/json. Reading them
+// must not allocate: that panics on an unaddressable value, and on an
+// addressable one it writes into the caller's struct.
+func TestMarshalNilEmbeddedPointer(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		in   interface{}
+		out  string
+	}{
+		{
+			name: "nil",
+			in:   EmbeddedOuter{S: "a"},
+			out:  xmlDoc(`<dict><key>S</key><string>a</string></dict>`),
+		},
+		{
+			name: "nil through pointer",
+			in:   &EmbeddedOuter{S: "a"},
+			out:  xmlDoc(`<dict><key>S</key><string>a</string></dict>`),
+		},
+		{
+			name: "nil with omitempty",
+			in:   embeddedOuterOmit{S: "a"},
+			out:  xmlDoc(`<dict><key>S</key><string>a</string></dict>`),
+		},
+		{
+			name: "nil unexported",
+			in:   embeddedOuterUnexported{S: "a"},
+			out:  xmlDoc(`<dict><key>S</key><string>a</string></dict>`),
+		},
+		{
+			name: "nil two levels down",
+			in:   embeddedDeep{S2: "b"},
+			out:  xmlDoc(`<dict><key>S2</key><string>b</string></dict>`),
+		},
+		{
+			name: "non-nil",
+			in:   EmbeddedOuter{S: "a", EmbeddedInner: &EmbeddedInner{S2: "b"}},
+			out:  xmlDoc(`<dict><key>S</key><string>a</string><key>S2</key><string>b</string></dict>`),
+		},
+		{
+			name: "non-nil empty with omitempty",
+			in:   embeddedOuterOmit{S: "a", EmbeddedInner: &EmbeddedInner{}},
+			out:  xmlDoc(`<dict><key>S</key><string>a</string><key>S2</key><string></string></dict>`),
+		},
+		{
+			name: "non-nil unexported",
+			in:   embeddedOuterUnexported{S: "a", embeddedUnexported: &embeddedUnexported{S3: "c"}},
+			out:  xmlDoc(`<dict><key>S</key><string>a</string><key>S3</key><string>c</string></dict>`),
+		},
+	} {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b, err := Marshal(tt.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != tt.out {
+				t.Errorf("Marshal(%+v) =\n%s\nwant\n%s", tt.in, b, tt.out)
+			}
+		})
+	}
+
+	t.Run("does not modify input", func(t *testing.T) {
+		t.Parallel()
+		in := &EmbeddedOuter{S: "a"}
+		if _, err := Marshal(in); err != nil {
+			t.Fatal(err)
+		}
+		if in.EmbeddedInner != nil {
+			t.Errorf("Marshal allocated EmbeddedInner in its input: %+v", in.EmbeddedInner)
+		}
+	})
 }

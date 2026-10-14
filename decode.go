@@ -190,10 +190,27 @@ func (d *Decoder) unmarshalUID(pval *plistValue, v reflect.Value) error {
 }
 
 func (d *Decoder) unmarshalData(pval *plistValue, v reflect.Value) error {
-	if v.Kind() != reflect.Slice || v.Type().Elem().Kind() != reflect.Uint8 {
-		return UnmarshalTypeError{fmt.Sprintf("%s", pval.value.([]byte)), v.Type()}
+	b := pval.value.([]byte)
+	if (v.Kind() != reflect.Slice && v.Kind() != reflect.Array) || v.Type().Elem().Kind() != reflect.Uint8 {
+		return UnmarshalTypeError{fmt.Sprintf("%s", b), v.Type()}
 	}
-	v.SetBytes(pval.value.([]byte))
+	if v.Kind() == reflect.Slice {
+		v.SetBytes(b)
+		return nil
+	}
+	// A fixed-size array (a UUID or a hash, say) can't take more bytes than it
+	// holds, and truncating would silently lose data. Fewer is fine; the rest
+	// is zeroed rather than left over from whatever was there before.
+	if len(b) > v.Len() {
+		return fmt.Errorf("plist: cannot unmarshal %d bytes of data into %v", len(b), v.Type())
+	}
+	// Slicing the array, rather than reflect.Copy, also works for arrays of a
+	// named byte type, whose element type doesn't match []byte.
+	dst := v.Slice(0, v.Len()).Bytes()
+	n := copy(dst, b)
+	for i := n; i < len(dst); i++ {
+		dst[i] = 0
+	}
 	return nil
 }
 
@@ -222,20 +239,30 @@ func (d *Decoder) unmarshalDictionary(pval *plistValue, v reflect.Value) error {
 			if _, ok := subvalues[field.name]; !ok {
 				continue
 			}
-			if err := d.unmarshal(subvalues[field.name], field.value(v)); err != nil {
+			fv, err := field.valueForWriting(v)
+			if err != nil {
+				return err
+			}
+			if err := d.unmarshal(subvalues[field.name], fv); err != nil {
 				return err
 			}
 		}
 	case reflect.Map:
+		// Dictionary keys are strings. Check before allocating, so a failed
+		// decode doesn't leave a new empty map behind.
+		if v.Type().Key().Kind() != reflect.String {
+			return UnmarshalTypeError{"dict", v.Type()}
+		}
 		if v.IsNil() {
 			v.Set(reflect.MakeMap(v.Type()))
 		}
 		for k, sval := range subvalues {
 			keyv := reflect.ValueOf(k).Convert(v.Type().Key())
-			mapElem := v.MapIndex(keyv)
-			if !mapElem.IsValid() {
-				mapElem = reflect.New(v.Type().Elem()).Elem()
-			}
+			// Decode into a fresh value rather than the existing element:
+			// map elements aren't addressable, so decoding into one panics,
+			// and a present key replaces its old value rather than merging
+			// into it, as in encoding/json.
+			mapElem := reflect.New(v.Type().Elem()).Elem()
 			if err := d.unmarshal(sval, mapElem); err != nil {
 				return err
 			}

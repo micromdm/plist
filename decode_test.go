@@ -839,3 +839,255 @@ func TestDecodeUIDFromFile(t *testing.T) {
 		t.Error("Expected", UID(1), "got", rootUID)
 	}
 }
+
+// TestDecodeEmbeddedPointer checks that decoding a key promoted through a nil
+// embedded struct pointer allocates it, and that a nil pointer to an
+// unexported embedded struct, which reflection can't allocate, is an error
+// rather than a panic.
+func TestDecodeEmbeddedPointer(t *testing.T) {
+	t.Parallel()
+	doc := xmlDoc(`<dict><key>S</key><string>a</string><key>S2</key><string>b</string><key>S3</key><string>c</string></dict>`)
+
+	t.Run("allocates", func(t *testing.T) {
+		t.Parallel()
+		var out EmbeddedOuter
+		if err := Unmarshal([]byte(doc), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.S != "a" || out.EmbeddedInner == nil || out.S2 != "b" {
+			t.Errorf("Unmarshal = %+v (EmbeddedInner %+v), want S=a S2=b", out, out.EmbeddedInner)
+		}
+	})
+
+	t.Run("allocates two levels down", func(t *testing.T) {
+		t.Parallel()
+		var out struct {
+			*EmbeddedOuter
+		}
+		if err := Unmarshal([]byte(doc), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.EmbeddedOuter == nil || out.EmbeddedInner == nil || out.S != "a" || out.S2 != "b" {
+			t.Errorf("Unmarshal = %+v, want S=a S2=b", out)
+		}
+	})
+
+	t.Run("leaves nil without a key", func(t *testing.T) {
+		t.Parallel()
+		var out EmbeddedOuter
+		if err := Unmarshal([]byte(xmlDoc(`<dict><key>S</key><string>a</string></dict>`)), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.EmbeddedInner != nil {
+			t.Errorf("Unmarshal allocated EmbeddedInner with no key for it: %+v", out.EmbeddedInner)
+		}
+	})
+
+	t.Run("unexported nil is an error", func(t *testing.T) {
+		t.Parallel()
+		var out embeddedOuterUnexported
+		if err := Unmarshal([]byte(doc), &out); err == nil {
+			t.Errorf("Unmarshal into nil unexported embedded pointer succeeded, want error")
+		}
+	})
+
+	t.Run("unexported non-nil", func(t *testing.T) {
+		t.Parallel()
+		out := embeddedOuterUnexported{embeddedUnexported: &embeddedUnexported{}}
+		if err := Unmarshal([]byte(doc), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.S3 != "c" {
+			t.Errorf("Unmarshal S3 = %q, want %q", out.S3, "c")
+		}
+	})
+}
+
+// TestDecodeDataIntoByteArray checks that <data> decodes into a fixed-size
+// byte array, as it already encodes from one.
+func TestDecodeDataIntoByteArray(t *testing.T) {
+	t.Parallel()
+	// "AAECAw==" is the four bytes 0x00 0x01 0x02 0x03.
+	data4 := xmlDoc(`<data>AAECAw==</data>`)
+
+	t.Run("exact size", func(t *testing.T) {
+		t.Parallel()
+		var out [4]byte
+		if err := Unmarshal([]byte(data4), &out); err != nil {
+			t.Fatal(err)
+		}
+		if want := [4]byte{0, 1, 2, 3}; out != want {
+			t.Errorf("Unmarshal = %v, want %v", out, want)
+		}
+	})
+
+	t.Run("shorter zeroes the rest", func(t *testing.T) {
+		t.Parallel()
+		out := [6]byte{9, 9, 9, 9, 9, 9}
+		if err := Unmarshal([]byte(data4), &out); err != nil {
+			t.Fatal(err)
+		}
+		if want := [6]byte{0, 1, 2, 3, 0, 0}; out != want {
+			t.Errorf("Unmarshal = %v, want %v", out, want)
+		}
+	})
+
+	t.Run("longer is an error", func(t *testing.T) {
+		t.Parallel()
+		var out [3]byte
+		if err := Unmarshal([]byte(data4), &out); err == nil {
+			t.Errorf("Unmarshal of 4 bytes into %T succeeded with %v, want error", out, out)
+		}
+	})
+
+	t.Run("named byte type", func(t *testing.T) {
+		t.Parallel()
+		type myByte byte
+		var out [4]myByte
+		if err := Unmarshal([]byte(data4), &out); err != nil {
+			t.Fatal(err)
+		}
+		if want := [4]myByte{0, 1, 2, 3}; out != want {
+			t.Errorf("Unmarshal = %v, want %v", out, want)
+		}
+	})
+
+	t.Run("struct field and map value", func(t *testing.T) {
+		t.Parallel()
+		doc := xmlDoc(`<dict><key>ID</key><data>AAECAw==</data></dict>`)
+		var s struct{ ID [4]byte }
+		if err := Unmarshal([]byte(doc), &s); err != nil {
+			t.Fatal(err)
+		}
+		var m map[string][4]byte
+		if err := Unmarshal([]byte(doc), &m); err != nil {
+			t.Fatal(err)
+		}
+		want := [4]byte{0, 1, 2, 3}
+		if s.ID != want || m["ID"] != want {
+			t.Errorf("Unmarshal = %v and %v, want %v", s.ID, m["ID"], want)
+		}
+	})
+
+	t.Run("round trip", func(t *testing.T) {
+		t.Parallel()
+		in := [16]byte{0xde, 0xad, 0xbe, 0xef, 15: 0xff}
+		b, err := Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out [16]byte
+		if err := Unmarshal(b, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out != in {
+			t.Errorf("round trip = %v, want %v", out, in)
+		}
+	})
+
+	t.Run("array of non-bytes is a type error", func(t *testing.T) {
+		t.Parallel()
+		var out [4]int
+		if err := Unmarshal([]byte(data4), &out); err == nil {
+			t.Errorf("Unmarshal <data> into %T succeeded, want error", out)
+		}
+	})
+}
+
+// TestDecodeDictIntoMapKeyType checks that a dictionary decodes into a map
+// with a string-kinded key, named or not, and that any other key type is a
+// type error rather than a panic from reflect.
+func TestDecodeDictIntoMapKeyType(t *testing.T) {
+	t.Parallel()
+	doc := []byte(xmlDoc(`<dict><key>1</key><string>a</string></dict>`))
+
+	t.Run("named string key", func(t *testing.T) {
+		t.Parallel()
+		type key string
+		var out map[key]string
+		if err := Unmarshal(doc, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out["1"] != "a" {
+			t.Errorf("Unmarshal = %v, want map[1:a]", out)
+		}
+	})
+
+	for _, tt := range []struct {
+		name string
+		out  interface{}
+	}{
+		{"int key", &map[int]string{}},
+		{"bool key", &map[bool]string{}},
+		{"struct key", &map[struct{ S string }]string{}},
+	} {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := Unmarshal(doc, tt.out)
+			if _, ok := err.(UnmarshalTypeError); !ok {
+				t.Errorf("Unmarshal into %T: err = %v (%T), want UnmarshalTypeError", tt.out, err, err)
+			}
+		})
+	}
+
+	t.Run("nil map stays nil", func(t *testing.T) {
+		t.Parallel()
+		var out map[int]string
+		if err := Unmarshal(doc, &out); err == nil {
+			t.Fatal("Unmarshal succeeded, want error")
+		}
+		if out != nil {
+			t.Errorf("failed Unmarshal allocated %#v", out)
+		}
+	})
+}
+
+// TestDecodeIntoPopulatedMap checks that decoding into a map that already has
+// entries replaces the value for each key in the document and keeps the rest,
+// as in encoding/json. Map elements aren't addressable, so decoding into the
+// existing element used to panic.
+func TestDecodeIntoPopulatedMap(t *testing.T) {
+	t.Parallel()
+	type pair struct{ A, B int }
+
+	t.Run("string values", func(t *testing.T) {
+		t.Parallel()
+		out := map[string]string{"k": "old", "keep": "x"}
+		doc := xmlDoc(`<dict><key>k</key><string>new</string></dict>`)
+		if err := Unmarshal([]byte(doc), &out); err != nil {
+			t.Fatal(err)
+		}
+		if want := (map[string]string{"k": "new", "keep": "x"}); !reflect.DeepEqual(out, want) {
+			t.Errorf("Unmarshal = %v, want %v", out, want)
+		}
+	})
+
+	t.Run("struct values replace", func(t *testing.T) {
+		t.Parallel()
+		out := map[string]pair{"k": {A: 1, B: 2}}
+		doc := xmlDoc(`<dict><key>k</key><dict><key>A</key><integer>9</integer></dict></dict>`)
+		if err := Unmarshal([]byte(doc), &out); err != nil {
+			t.Fatal(err)
+		}
+		if want := (pair{A: 9}); out["k"] != want {
+			t.Errorf("Unmarshal k = %+v, want %+v", out["k"], want)
+		}
+	})
+
+	t.Run("pointer values replace", func(t *testing.T) {
+		t.Parallel()
+		old := &pair{A: 1, B: 2}
+		out := map[string]*pair{"k": old}
+		doc := xmlDoc(`<dict><key>k</key><dict><key>A</key><integer>9</integer></dict></dict>`)
+		if err := Unmarshal([]byte(doc), &out); err != nil {
+			t.Fatal(err)
+		}
+		if want := (pair{A: 9}); out["k"] == nil || *out["k"] != want {
+			t.Errorf("Unmarshal k = %+v, want %+v", out["k"], want)
+		}
+		if want := (pair{A: 1, B: 2}); *old != want {
+			t.Errorf("Unmarshal wrote through the old pointer: %+v, want %+v", *old, want)
+		}
+	})
+}

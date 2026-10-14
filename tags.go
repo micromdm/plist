@@ -1,6 +1,7 @@
 package plist
 
 import (
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -51,17 +52,40 @@ type field struct {
 	omitEmpty bool
 }
 
+// value returns v's field corresponding to f, for reading. It follows embedded
+// struct pointers without allocating, and returns the zero Value if one of them
+// is nil: a field promoted through a nil pointer is absent, not empty.
 func (f field) value(v reflect.Value) reflect.Value {
 	for _, i := range f.index {
 		if v.Kind() == reflect.Ptr {
 			if v.IsNil() {
-				v.Set(reflect.New(v.Type().Elem()))
+				return reflect.Value{}
 			}
 			v = v.Elem()
 		}
 		v = v.Field(i)
 	}
 	return v
+}
+
+// valueForWriting is like value, but allocates nil embedded struct pointers so
+// that the returned field can be set. A nil pointer to an unexported embedded
+// struct can't be allocated through reflection, so that's an error, as it is
+// in encoding/json.
+func (f field) valueForWriting(v reflect.Value) (reflect.Value, error) {
+	for _, i := range f.index {
+		if v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				if !v.CanSet() {
+					return reflect.Value{}, fmt.Errorf("plist: cannot set embedded pointer to unexported struct: %v", v.Type().Elem())
+				}
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		v = v.Field(i)
+	}
+	return v, nil
 }
 
 type byName []field
