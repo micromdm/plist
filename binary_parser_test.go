@@ -3,9 +3,12 @@ package plist
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -301,5 +304,101 @@ func TestBinaryReal4ByteTestdata(t *testing.T) {
 	}
 	if _, ok := m["float64key"].(float64); !ok {
 		t.Fatalf("float64key into interface{}: got %T (%v), want float64", m["float64key"], m["float64key"])
+	}
+}
+
+// TestBinaryIntegerSign decodes integers written by `plutil -convert binary1`
+// (macOS 26.7.1). CoreFoundation writes negative integers as 8 bytes and
+// unsigned integers above math.MaxInt64 as 16 bytes, so an 8-byte integer with
+// the top bit set is negative and must decode like the XML form.
+func TestBinaryIntegerSign(t *testing.T) {
+	tests := []struct {
+		xml    string      // <integer> text of the equivalent XML plist
+		binary string      // hex of the plutil binary1 output
+		want   interface{} // decoded into interface{}
+	}{
+		{"-1", "62706c697374303013ffffffffffffffff080000000000000101000000000000000100000000000000000000000000000011", int64(-1)},
+		{"-129", "62706c697374303013ffffffffffffff7f080000000000000101000000000000000100000000000000000000000000000011", int64(-129)},
+		{"-9223372036854775808", "62706c6973743030138000000000000000080000000000000101000000000000000100000000000000000000000000000011", int64(math.MinInt64)},
+		{"255", "62706c697374303010ff08000000000000010100000000000000010000000000000000000000000000000a", uint64(255)},
+		{"4294967295", "62706c697374303012ffffffff08000000000000010100000000000000010000000000000000000000000000000d", uint64(math.MaxUint32)},
+		{"9223372036854775807", "62706c6973743030137fffffffffffffff080000000000000101000000000000000100000000000000000000000000000011", uint64(math.MaxInt64)},
+		{"18446744073709551615", "62706c6973743030140000000000000000ffffffffffffffff080000000000000101000000000000000100000000000000000000000000000019", uint64(math.MaxUint64)},
+		{"65535", "62706c697374303011ffff08000000000000010100000000000000010000000000000000000000000000000b", uint64(math.MaxUint16)},
+		// Hand-crafted from the UINT64_MAX case with upper bytes 0000000000000001; plutil -p prints 18446744073709551615. No XML form.
+		{"", "62706c6973743030140000000000000001ffffffffffffffff080000000000000101000000000000000100000000000000000000000000000019", uint64(math.MaxUint64)},
+	}
+	for _, tt := range tests {
+		name := tt.xml
+		if name == "" {
+			name = "16-byte upper bytes set"
+		}
+		t.Run(name, func(t *testing.T) {
+			bin, err := hex.DecodeString(tt.binary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			xmlDoc := []byte(xmlDOCTYPE + `<plist version="1.0"><integer>` + tt.xml + `</integer></plist>`)
+			_, negative := tt.want.(int64)
+			if tt.xml == "" {
+				// No XML form exists, so only check the binary decode.
+				var binAny interface{}
+				var binUint uint64
+				if err := Unmarshal(bin, &binAny); err != nil || !reflect.DeepEqual(binAny, tt.want) {
+					t.Errorf("binary into interface{}: got %T(%v), %v; want %T(%v)", binAny, binAny, err, tt.want, tt.want)
+				}
+				if err := Unmarshal(bin, &binUint); err != nil || binUint != tt.want.(uint64) {
+					t.Errorf("binary into uint64: got %d, %v; want %d", binUint, err, tt.want)
+				}
+				return
+			}
+
+			var binAny, xmlAny interface{}
+			if err := Unmarshal(bin, &binAny); err != nil {
+				t.Fatal(err)
+			}
+			if err := Unmarshal(xmlDoc, &xmlAny); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(binAny, tt.want) {
+				t.Errorf("binary into interface{}: got %T(%v), want %T(%v)", binAny, binAny, tt.want, tt.want)
+			}
+			if !reflect.DeepEqual(binAny, xmlAny) {
+				t.Errorf("binary into interface{}: got %T(%v), XML got %T(%v)", binAny, binAny, xmlAny, xmlAny)
+			}
+
+			var binInt, xmlInt int64
+			if err := Unmarshal(bin, &binInt); err != nil {
+				t.Fatal(err)
+			}
+			if err := Unmarshal(xmlDoc, &xmlInt); err != nil {
+				t.Fatal(err)
+			}
+			if binInt != xmlInt {
+				t.Errorf("binary into int64: got %d, XML got %d", binInt, xmlInt)
+			}
+
+			var binUint, xmlUint uint64
+			binErr := Unmarshal(bin, &binUint)
+			xmlErr := Unmarshal(xmlDoc, &xmlUint)
+			if negative {
+				if _, ok := binErr.(UnmarshalTypeError); !ok {
+					t.Errorf("binary into uint64: got %d, %v; want UnmarshalTypeError", binUint, binErr)
+				}
+				if _, ok := xmlErr.(UnmarshalTypeError); !ok {
+					t.Errorf("XML into uint64: got %d, %v; want UnmarshalTypeError", xmlUint, xmlErr)
+				}
+				if binInt != tt.want.(int64) {
+					t.Errorf("binary into int64: got %d, want %d", binInt, tt.want)
+				}
+				return
+			}
+			if binErr != nil || xmlErr != nil {
+				t.Fatalf("into uint64: binary error %v, XML error %v", binErr, xmlErr)
+			}
+			if binUint != tt.want.(uint64) || xmlUint != binUint {
+				t.Errorf("into uint64: binary got %d, XML got %d, want %d", binUint, xmlUint, tt.want)
+			}
+		})
 	}
 }
