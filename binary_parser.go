@@ -232,80 +232,16 @@ func (bp *binaryParser) parseSingleton(marker byte) (*plistValue, error) {
 }
 
 func (bp *binaryParser) parseInteger(marker byte) (*plistValue, error) {
-	// Integers are always stored as signed 64-bit integer, with leading zeros
-	// removed, so that the serialized form is either 1, 2, 4, or 8 bytes in
-	// length.
+	// CoreFoundation writes 1-, 2- and 4-byte integers as unsigned, 8-byte
+	// integers as signed 64-bit, and 16-byte integers for unsigned values
+	// above math.MaxInt64 (upper 8 bytes zero). Negative values are therefore
+	// always 8 bytes. When reading, CF ignores the upper 8 bytes of a 16-byte
+	// integer; so do we.
 	// See: https://opensource.apple.com/source/CF/CF-550.29/CFBinaryPList.c
 	//
 	// There is some discussion regarding 128-bit number support in the Python
 	// bug report below.  The conclusion was that public APIs only allow plists
 	// to contain up to 64-bit values.
-	//
-	// There is also an example of a bplist containing an unsigned value
-	// 0xffffffffffffffff [1], but when you look at its encoding, it is crafted
-	// using a 128bit field, with the upper 8 bytes all zeros.  Loading it into
-	// the Xcode plist editor, it appears as -1!  That must be a cosmetic bug
-	// in Xcode because if you then export the same plist as XML, you get the full
-	// value, 18446744073709551615 [2].
-	//
-	// So that we can decode such bplists, we will allow 16-byte integer values,
-	// but they will always be truncated to 64 bits.
-	//
-	// If you try and create a new plist in the Xcode editor, and paste in the
-	// 64-bit number 18446744073709551615, Xcode automatically rewrites it as
-	// the truncated 63-bit number 9223372036854775807.
-	//
-	// Separately, if you now create another new plist in the Xcode editor with
-	// the value -1, you get [3] and [4]: both negative values.
-	//
-	// [1] "hand crafted" bplist with 128-bit value.
-	// 00000000  62 70 6c 69 73 74 30 30  d1 01 02 53 6b 65 79 14  |bplist00...Skey.|
-	// 00000010  00 00 00 00 00 00 00 00  ff ff ff ff ff ff ff ff  |................|
-	// 00000020  08 0b 0f 00 00 00 00 00  00 01 01 00 00 00 00 00  |................|
-	// 00000030  00 00 03 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
-	// 00000040  00 00 20                                          |.. |
-	//
-	// [2] export of [1] to XML form, using Xcode.
-	// <?xml version="1.0" encoding="UTF-8"?>
-	// <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-	// <plist version="1.0">
-	// <dict>
-	// 	<key>key</key>
-	// 	<integer>18446744073709551615</integer>
-	// </dict>
-	// </plist>
-	//
-	// [3] bplist with a value of -1, created with Xcode.
-	// 00000000  62 70 6c 69 73 74 30 30  d1 01 02 53 6b 65 79 13  |bplist00...Skey.|
-	// 00000010  ff ff ff ff ff ff ff ff  08 0b 0f 00 00 00 00 00  |................|
-	// 00000020  00 01 01 00 00 00 00 00  00 00 03 00 00 00 00 00  |................|
-	// 00000030  00 00 00 00 00 00 00 00  00 00 18                 |...........|
-	//
-	// [4] export of [3] to XML form, using Xcode.
-	// <?xml version="1.0" encoding="UTF-8"?>
-	// <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-	// <plist version="1.0">
-	// <dict>
-	// 	<key>key</key>
-	// 	<integer>-1</integer>
-	// </dict>
-	// </plist>
-	//
-	// We have two choices here: restrict unsigned values to 63-bits, or just
-	// let the package user interpret the serialized value.  This implementation
-	// lets the user decide: if they want to unmarshal into a uint64 value,
-	// we give them the full 8-bytes as such.  If they unmarshal into a signed
-	// int64 value, we again give them the full 8-bytes as such, which will be
-	// interpreted as negative if the top bit is set.  This is achieved by
-	// setting the signed field of the signedInt value below to false
-	// unconditionally. That way, the Decoder.unmarshalInteger method will do
-	// the right thing.
-	//
-	// For XML property list unmarshaling, the presence of the "negative sign"
-	// on an integer value makes the above unambigious, and the current practice
-	// of using signedInt.signed = true in that case remains valid; see the
-	// xmlParser.parseInteger implementation.
-	//
 	// See: https://bugs.python.org/issue14455
 	nbytes := 1 << (marker & 0xf)
 	if nbytes > 16 {
@@ -317,10 +253,9 @@ func (bp *binaryParser) parseInteger(marker byte) (*plistValue, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Truncate values to 64 bits (8 bytes), and treat them all as "unsigned",
-	// so they can be unmarshaled to unsigned and signed integers alike as
-	// discussed above.
-	result := signedInt{binary.BigEndian.Uint64(buf[8:]), false}
+	// Truncate values to 64 bits (8 bytes). Only 8-byte integers are signed.
+	value := binary.BigEndian.Uint64(buf[8:])
+	result := signedInt{value, nbytes == 8 && int64(value) < 0}
 
 	return &plistValue{Integer, result}, nil
 }

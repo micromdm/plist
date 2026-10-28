@@ -332,7 +332,7 @@ func TestDecodeBinaryPlist(t *testing.T) {
 				Ints     []int64   `plist:"ints"`
 				Signed   int64     `plist:"signed"`
 				Unsigned uint64    `plist:"unsigned"`
-				Uint64   uint64    `plist:"uint64"`
+				Uint64   int64     `plist:"uint64"` // 8-byte 0xffffffffffffffff; CF reads it as -1
 				Reals    []float64 `plist:"reals"`
 				Date     time.Time `plist:"date"`
 				Strings  []string  `plist:"strings"`
@@ -368,7 +368,7 @@ func TestDecodeBinaryPlist(t *testing.T) {
 				t.Error("expected", expectedSigned, "got", sample.Signed)
 			}
 
-			expectedUint64 := ^uint64(0) // all bits set
+			expectedUint64 := int64(-1)
 			if sample.Uint64 != expectedUint64 {
 				t.Error("expected", expectedUint64, "got", sample.Uint64)
 			}
