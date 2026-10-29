@@ -202,7 +202,7 @@ func (d *Decoder) unmarshalData(pval *plistValue, v reflect.Value) error {
 	// holds, and truncating would silently lose data. Fewer is fine; the rest
 	// is zeroed rather than left over from whatever was there before.
 	if len(b) > v.Len() {
-		return fmt.Errorf("plist: cannot unmarshal %d bytes of data into %v", len(b), v.Type())
+		return UnmarshalTypeError{fmt.Sprintf("%d bytes of data", len(b)), v.Type()}
 	}
 	// Slicing the array, rather than reflect.Copy, also works for arrays of a
 	// named byte type, whose element type doesn't match []byte.

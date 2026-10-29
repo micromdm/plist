@@ -932,11 +932,12 @@ func TestDecodeDataIntoByteArray(t *testing.T) {
 		}
 	})
 
-	t.Run("longer is an error", func(t *testing.T) {
+	t.Run("longer is a type error", func(t *testing.T) {
 		t.Parallel()
 		var out [3]byte
-		if err := Unmarshal([]byte(data4), &out); err == nil {
-			t.Errorf("Unmarshal of 4 bytes into %T succeeded with %v, want error", out, out)
+		err := Unmarshal([]byte(data4), &out)
+		if _, ok := err.(UnmarshalTypeError); !ok {
+			t.Errorf("Unmarshal of 4 bytes into %T: err = %v (%T), want UnmarshalTypeError", out, err, err)
 		}
 	})
 
@@ -1020,6 +1021,10 @@ func TestDecodeDictIntoMapKeyType(t *testing.T) {
 		{"int key", &map[int]string{}},
 		{"bool key", &map[bool]string{}},
 		{"struct key", &map[struct{ S string }]string{}},
+		// Plist dictionary keys are always strings, so an interface key is
+		// a type error too, as in encoding/json, even though a string would
+		// fit in it.
+		{"interface key", &map[interface{}]string{}},
 	} {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
