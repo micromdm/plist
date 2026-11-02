@@ -13,7 +13,7 @@ import (
 )
 
 // maxXMLNodes bounds the TOTAL number of XML nodes allowed in a plist document.
-var maxXMLNodes = 1 << 18 // roughly 260k nodes
+var maxXMLNodes = 1 << 21 // roughly 2.1 million nodes
 
 // maxXMLDepth bounds the maximum depth of the XML element tree to prevent stack exhaustion.
 const maxXMLDepth = 128

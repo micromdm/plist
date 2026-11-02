@@ -67,6 +67,11 @@ func TestXMLDepthLimit(t *testing.T) {
 
 // <plist>, the root <dict>, and the container take three nodes; <key> isn't counted.
 func TestXMLNodeLimit(t *testing.T) {
+	oldMax := maxXMLNodes
+	maxXMLNodes = 6500
+	t.Cleanup(func() {
+		maxXMLNodes = oldMax
+	})
 	for _, tc := range []struct{ name, open, value, close string }{
 		{"array", "<array>", "<true/>", "</array>"},
 		{"dict", "<dict>", "<key>k</key><true/>", "</dict>"},
