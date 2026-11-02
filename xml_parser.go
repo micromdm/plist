@@ -16,7 +16,7 @@ import (
 var maxXMLNodes = 1 << 21 // roughly 2.1 million nodes
 
 // maxXMLDepth bounds the maximum depth of the XML element tree to prevent stack exhaustion.
-const maxXMLDepth = 128
+const maxXMLDepth = 129 // 128 but we include <plist>
 
 // xmlParser uses xml.Decoder to parse an xml plist into the corresponding plistValues
 type xmlParser struct {

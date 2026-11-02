@@ -8,10 +8,6 @@ import (
 	"testing"
 )
 
-func xmlPlist(rootValue string) []byte {
-	return []byte(`<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Root</key>` + rootValue + `</dict></plist>`)
-}
-
 func nested(open, close, leaf string, depth int) string {
 	return strings.Repeat(open, depth) + leaf + strings.Repeat(close, depth)
 }
@@ -29,9 +25,9 @@ func TestXMLDepthLimit(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"array", xmlPlist(nested("<array>", "</array>", "<true/>", over))},
-		{"dict", xmlPlist(nested("<dict><key>a</key>", "</dict>", "<true/>", over))},
-		{"array and dict", xmlPlist(nested("<array><dict><key>k</key>", "</dict></array>", "<true/>", over))},
+		{"array", []byte(xmlDoc(nested("<array>", "</array>", "<true/>", over)))},
+		{"dict", []byte(xmlDoc(nested("<dict><key>a</key>", "</dict>", "<true/>", over)))},
+		{"array and dict", []byte(xmlDoc(nested("<array><dict><key>k</key>", "</dict></array>", "<true/>", over)))},
 		{"plist in plist", []byte(nested("<plist>", "</plist>", "<true/>", over))},
 		// Tags never closed: the parser must stop on depth, not on EOF.
 		{"unclosed array", []byte(`<?xml version="1.0"?><plist version="1.0">` + strings.Repeat("<array>", over))},
@@ -52,20 +48,20 @@ func TestXMLDepthLimit(t *testing.T) {
 		wantErrContaining(t, NewXMLDecoder(bytes.NewReader(data)).Decode(&v), "maximum depth")
 	})
 
-	// <plist>, the root <dict>, and the leaf take three levels.
+	// <plist> and the leaf take two levels.
 	t.Run("at the limit decodes", func(t *testing.T) {
 		var v interface{}
-		if err := Unmarshal(xmlPlist(nested("<array>", "</array>", "<true/>", maxXMLDepth-3)), &v); err != nil {
+		if err := Unmarshal([]byte(xmlDoc(nested("<array>", "</array>", "<true/>", maxXMLDepth-2))), &v); err != nil {
 			t.Fatal(err)
 		}
 	})
 	t.Run("one past the limit fails", func(t *testing.T) {
 		var v interface{}
-		wantErrContaining(t, Unmarshal(xmlPlist(nested("<array>", "</array>", "<true/>", maxXMLDepth-2)), &v), "maximum depth")
+		wantErrContaining(t, Unmarshal([]byte(xmlDoc(nested("<array>", "</array>", "<true/>", maxXMLDepth-1))), &v), "maximum depth")
 	})
 }
 
-// <plist>, the root <dict>, and the container take three nodes; <key> isn't counted.
+// <plist> and the container take two nodes; <key> isn't counted.
 func TestXMLNodeLimit(t *testing.T) {
 	oldMax := maxXMLNodes
 	maxXMLNodes = 6500
@@ -78,13 +74,13 @@ func TestXMLNodeLimit(t *testing.T) {
 	} {
 		t.Run(tc.name+" at the limit decodes", func(t *testing.T) {
 			var v interface{}
-			if err := Unmarshal(xmlPlist(tc.open+strings.Repeat(tc.value, maxXMLNodes-3)+tc.close), &v); err != nil {
+			if err := Unmarshal([]byte(xmlDoc(tc.open+strings.Repeat(tc.value, maxXMLNodes-2)+tc.close)), &v); err != nil {
 				t.Fatal(err)
 			}
 		})
 		t.Run(tc.name+" one past the limit fails", func(t *testing.T) {
 			var v interface{}
-			wantErrContaining(t, Unmarshal(xmlPlist(tc.open+strings.Repeat(tc.value, maxXMLNodes-2)+tc.close), &v), "maximum size")
+			wantErrContaining(t, Unmarshal([]byte(xmlDoc(tc.open+strings.Repeat(tc.value, maxXMLNodes-1)+tc.close)), &v), "maximum size")
 		})
 	}
 }
