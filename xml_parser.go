@@ -24,8 +24,9 @@ var replacer = strings.NewReplacer("\t", "", "\n", "", " ", "", "\r", "")
 
 // xmlParser uses xml.Decoder to parse an xml plist into the corresponding plistValues
 type xmlParser struct {
-	depth int // current depth of the XML element tree
-	nodes int // total number of XML nodes encountered so far
+	depth       int // current depth of the XML element tree
+	nodes       int // total number of XML nodes encountered so far
+	maxXMLNodes int // maximum number of XML nodes allowed during decoding
 	*xml.Decoder
 }
 
@@ -44,7 +45,7 @@ func (p *xmlParser) Token() (xml.Token, error) {
 
 // newXMLParser returns a new xmlParser
 func newXMLParser(r io.Reader) *xmlParser {
-	return &xmlParser{Decoder: xml.NewDecoder(r)}
+	return &xmlParser{Decoder: xml.NewDecoder(r), maxXMLNodes: maxXMLNodes}
 }
 
 func (p *xmlParser) parseDocument(start *xml.StartElement) (*plistValue, error) {
@@ -75,8 +76,8 @@ func (p *xmlParser) parseDocument(start *xml.StartElement) (*plistValue, error) 
 func (p *xmlParser) parseXMLElement(element *xml.StartElement) (*plistValue, error) {
 	// verify total object nodes and depth before parsing this element
 	p.nodes++
-	if p.nodes > maxXMLNodes {
-		return nil, fmt.Errorf("plist: object graph exceeds maximum size (%d nodes)", maxXMLNodes)
+	if p.nodes > p.maxXMLNodes {
+		return nil, fmt.Errorf("plist: object graph exceeds maximum size (%d nodes)", p.maxXMLNodes)
 	}
 
 	if p.depth >= maxXMLDepth {
