@@ -23,13 +23,14 @@ type plistTrailer struct {
 }
 
 type binaryParser struct {
-	OffsetTable   []uint64        // array of offsets for each object in plist
-	plistTrailer                  // last 32 bytes of plist
-	io.ReadSeeker                 // reader for plist data
-	inProgress    map[uint64]bool // indices currently on the recursion stack (cycle detection)
-	depth         int             // current recursion depth
-	nodes         int             // total materialized objects so far (expansion budget)
-	bytes         uint64          // total data/string bytes materialized so far (size budget)
+	OffsetTable    []uint64        // array of offsets for each object in plist
+	plistTrailer                   // last 32 bytes of plist
+	io.ReadSeeker                  // reader for plist data
+	inProgress     map[uint64]bool // indices currently on the recursion stack (cycle detection)
+	depth          int             // current recursion depth
+	nodes          int             // total materialized objects so far (expansion budget)
+	bytes          uint64          // total data/string bytes materialized so far (size budget)
+	maxObjectNodes int             // maximum number of objects allowed during decoding
 }
 
 // maxObjectDepth bounds binary-plist reference nesting to prevent
@@ -57,7 +58,9 @@ var maxObjectBytes uint64 = 1 << 26 // 64MB
 // newBinaryParser takes in a ReadSeeker for the bytes of a binary plist and
 // returns a parser after reading the offset table and trailer.
 func newBinaryParser(r io.ReadSeeker) (*binaryParser, error) {
-	var bp binaryParser
+	bp := &binaryParser{
+		maxObjectNodes: maxObjectNodes,
+	}
 	bp.ReadSeeker = r
 
 	// Read the trailer.
@@ -121,7 +124,7 @@ func newBinaryParser(r io.ReadSeeker) (*binaryParser, error) {
 
 	bp.inProgress = make(map[uint64]bool)
 
-	return &bp, nil
+	return bp, nil
 }
 
 // parseDocument parses the entire binary plist starting from the root object
@@ -148,8 +151,8 @@ func (bp *binaryParser) parseObjectRef(index uint64) (val *plistValue, err error
 
 	// total expansion budget
 	bp.nodes++
-	if bp.nodes > maxObjectNodes {
-		return nil, fmt.Errorf("plist: object graph exceeds maximum size (%d nodes)", maxObjectNodes)
+	if bp.nodes > bp.maxObjectNodes {
+		return nil, fmt.Errorf("plist: object graph exceeds maximum size (%d nodes)", bp.maxObjectNodes)
 	}
 
 	// max depth check

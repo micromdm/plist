@@ -23,19 +23,22 @@ type Unmarshaler interface {
 }
 
 // Unmarshal parses the plist-encoded data and stores the result in the value pointed to by v.
-func Unmarshal(data []byte, v interface{}) error {
+func Unmarshal(data []byte, v interface{}, opts ...DecoderOption) error {
 	// Check for binary plist here before setting up the decoder.
 	if bytes.HasPrefix(data, []byte("bplist0")) {
-		return NewBinaryDecoder(bytes.NewReader(data)).Decode(v)
+		return NewBinaryDecoder(bytes.NewReader(data), opts...).Decode(v)
 	}
-	return NewXMLDecoder(bytes.NewReader(data)).Decode(v)
+	return NewXMLDecoder(bytes.NewReader(data), opts...).Decode(v)
 }
+
+type DecoderOption func(*Decoder)
 
 // A Decoder reads and decodes Apple plist objects from an input stream.
 // The plists can be in XML or binary format.
 type Decoder struct {
 	reader   io.Reader // binary decoders assert this to io.ReadSeeker
 	isBinary bool      // true if this is a binary plist
+	maxNodes int       // maximum number of nodes allowed during decoding
 }
 
 // NewDecoder returns a new XML plist decoder.
@@ -45,14 +48,30 @@ func NewDecoder(r io.Reader) *Decoder {
 }
 
 // NewXMLDecoder returns a new decoder that reads an XML plist from r.
-func NewXMLDecoder(r io.Reader) *Decoder {
-	return &Decoder{reader: r, isBinary: false}
+func NewXMLDecoder(r io.Reader, opts ...DecoderOption) *Decoder {
+	decoder := &Decoder{reader: r, isBinary: false}
+
+	for _, opt := range opts {
+		opt(decoder)
+	}
+
+	return decoder
 }
 
 // NewBinaryDecoder returns a new decoder that reads a binary plist from r.
 // No error checking is done to make sure that r is actually a binary plist.
-func NewBinaryDecoder(r io.ReadSeeker) *Decoder {
-	return &Decoder{reader: r, isBinary: true}
+func NewBinaryDecoder(r io.ReadSeeker, opts ...DecoderOption) *Decoder {
+	decoder := &Decoder{reader: r, isBinary: true}
+	for _, opt := range opts {
+		opt(decoder)
+	}
+	return decoder
+}
+
+func WithMaxNodes(maxNodes int) DecoderOption {
+	return func(d *Decoder) {
+		d.maxNodes = maxNodes
+	}
 }
 
 // Decode reads the next plist-encoded value from its input and stores it in
@@ -72,6 +91,9 @@ func (d *Decoder) Decode(v interface{}) error {
 			return fmt.Errorf("binary plist decoder requires an io.ReadSeeker")
 		}
 		parser, err := newBinaryParser(r)
+		if d.maxNodes > 0 {
+			parser.maxObjectNodes = d.maxNodes
+		}
 		if err != nil {
 			return err
 		}
@@ -82,6 +104,9 @@ func (d *Decoder) Decode(v interface{}) error {
 	} else {
 		var err error
 		parser := newXMLParser(d.reader)
+		if d.maxNodes > 0 {
+			parser.maxXMLNodes = d.maxNodes
+		}
 		pval, err = parser.parseDocument(nil)
 		if err != nil {
 			return err
