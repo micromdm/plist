@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -103,5 +104,28 @@ func TestXMLDeepNesting(t *testing.T) {
 			out = out[:2048]
 		}
 		t.Fatalf("child process failed: %v\n%s", err, out)
+	}
+}
+
+func TestXMLUID(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       interface{}
+	}{
+		{"uid", "<key>CF$UID</key><integer>1</integer>", UID(1)},
+		{"duplicate keys, last wins", "<key>CF$UID</key><integer>1</integer><key>CF$UID</key><integer>2</integer>", UID(2)},
+		{"extra key", "<key>CF$UID</key><integer>1</integer><key>a</key><true/>", map[string]interface{}{"CF$UID": uint64(1), "a": true}},
+		{"not first", "<key>a</key><true/><key>CF$UID</key><integer>1</integer>", map[string]interface{}{"CF$UID": uint64(1), "a": true}},
+		{"not an integer", "<key>CF$UID</key><string>1</string>", map[string]interface{}{"CF$UID": "1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var v interface{}
+			if err := Unmarshal([]byte(xmlDoc("<dict>"+tc.body+"</dict>")), &v); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(v, tc.want) {
+				t.Errorf("got %#v, want %#v", v, tc.want)
+			}
+		})
 	}
 }

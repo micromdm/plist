@@ -72,6 +72,17 @@ func (p *xmlParser) parseDocument(start *xml.StartElement) (*plistValue, error) 
 	}
 }
 
+// Shared values for leaves that carry no data. The decoder only reads the
+// parsed tree, so these never need their own allocation.
+// To avoid allocating a new empty object, but rather re-use
+var (
+	xmlTrue        = &plistValue{Boolean, true}
+	xmlFalse       = &plistValue{Boolean, false}
+	xmlEmptyString = &plistValue{String, ""}
+	xmlEmptyArray  = &plistValue{Array, []*plistValue(nil)}
+	xmlEmptyDict   = &plistValue{Dictionary, &dictionary{}}
+)
+
 func (p *xmlParser) parseXMLElement(element *xml.StartElement) (*plistValue, error) {
 	// verify total object nodes and depth before parsing this element
 	p.nodes++
@@ -142,7 +153,10 @@ func (p *xmlParser) parsePlist(element *xml.StartElement) (*plistValue, error) {
 
 func (p *xmlParser) parseDict(element *xml.StartElement) (*plistValue, error) {
 	var key *string
-	var subvalues = make(map[string]*plistValue)
+	// Parallel slices rather than a map: a map costs ~250 bytes even with one
+	// entry, which a small dict in the input costs ~30 bytes to produce.
+	var keys []string
+	var values []*plistValue
 	for {
 		token, err := p.Token()
 		if err != nil {
@@ -150,12 +164,20 @@ func (p *xmlParser) parseDict(element *xml.StartElement) (*plistValue, error) {
 		}
 		switch el := token.(type) {
 		case xml.EndElement:
-			if len(subvalues) == 1 {
-				if uidVal, ok := subvalues["CF$UID"]; ok && uidVal.kind == Integer {
-					return &plistValue{CFUID, UID(uidVal.value.(signedInt).value)}, nil
+			if len(keys) == 0 {
+				return xmlEmptyDict, nil
+			}
+			dict := &dictionary{keys: keys, values: values}
+			// A UID is a dict whose only key is CF$UID, so it must come first;
+			// skip building the map for every other dict.
+			if keys[0] == "CF$UID" {
+				if m := dict.lookup(); len(m) == 1 {
+					if uidVal, ok := m["CF$UID"]; ok && uidVal.kind == Integer {
+						return &plistValue{CFUID, UID(uidVal.value.(signedInt).value)}, nil
+					}
 				}
 			}
-			return &plistValue{Dictionary, &dictionary{m: subvalues}}, nil
+			return &plistValue{Dictionary, dict}, nil
 		case xml.StartElement:
 			if el.Name.Local == "key" {
 				var k string
@@ -168,10 +190,12 @@ func (p *xmlParser) parseDict(element *xml.StartElement) (*plistValue, error) {
 			if key == nil {
 				return nil, errors.New("plist: missing key in dict")
 			}
-			subvalues[*key], err = p.parseXMLElement(&el)
+			v, err := p.parseXMLElement(&el)
 			if err != nil {
 				return nil, err
 			}
+			keys = append(keys, *key)
+			values = append(values, v)
 			key = nil
 		case xml.CharData:
 			if len(bytes.TrimSpace(el)) != 0 {
@@ -188,6 +212,9 @@ func (p *xmlParser) parseString(element *xml.StartElement) (*plistValue, error) 
 	if err := p.DecodeElement(&value, element); err != nil {
 		return nil, err
 	}
+	if value == "" {
+		return xmlEmptyString, nil
+	}
 	return &plistValue{String, value}, nil
 }
 
@@ -195,8 +222,10 @@ func (p *xmlParser) parseBoolean(element *xml.StartElement) (*plistValue, error)
 	if err := p.Skip(); err != nil {
 		return nil, err
 	}
-	plistBoolean := element.Name.Local == "true"
-	return &plistValue{Boolean, plistBoolean}, nil
+	if element.Name.Local == "true" {
+		return xmlTrue, nil
+	}
+	return xmlFalse, nil
 }
 
 func (p *xmlParser) parseArray(element *xml.StartElement) (*plistValue, error) {
@@ -208,6 +237,9 @@ func (p *xmlParser) parseArray(element *xml.StartElement) (*plistValue, error) {
 		}
 		switch el := token.(type) {
 		case xml.EndElement:
+			if subvalues == nil {
+				return xmlEmptyArray, nil
+			}
 			return &plistValue{Array, subvalues}, nil
 		case xml.StartElement:
 			subv, err := p.parseXMLElement(&el)
