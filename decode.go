@@ -231,7 +231,7 @@ func (d *Decoder) unmarshalBoolean(pval *plistValue, v reflect.Value) error {
 }
 
 func (d *Decoder) unmarshalDictionary(pval *plistValue, v reflect.Value) error {
-	subvalues := pval.value.(*dictionary).m
+	subvalues := pval.value.(*dictionary).lookup()
 	switch v.Kind() {
 	case reflect.Struct:
 		fields := cachedTypeFields(v.Type())
@@ -399,7 +399,7 @@ func (d *Decoder) arrayInterface(subvalues []*plistValue) []interface{} {
 
 func (d *Decoder) dictionaryInterface(dict *dictionary) map[string]interface{} {
 	out := make(map[string]interface{})
-	for k, subv := range dict.m {
+	for k, subv := range dict.lookup() {
 		out[k] = d.valueInterface(subv)
 	}
 	return out

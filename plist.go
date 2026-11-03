@@ -54,8 +54,21 @@ type dictionary struct {
 	values []*plistValue
 }
 
+// lookup returns the dict as a map. Parsed dicts hold only keys and values,
+// so the map is built on demand and not retained.
+func (d *dictionary) lookup() map[string]*plistValue {
+	if d.m != nil || len(d.keys) == 0 {
+		return d.m
+	}
+	m := make(map[string]*plistValue, len(d.keys))
+	for i, k := range d.keys {
+		m[k] = d.values[i] // later duplicates win, as with the old map
+	}
+	return m
+}
+
 func (d *dictionary) Len() int {
-	return len(d.m)
+	return len(d.lookup())
 }
 
 func (d *dictionary) Less(i, j int) bool {
