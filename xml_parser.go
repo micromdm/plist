@@ -18,6 +18,10 @@ var maxXMLNodes = 1 << 21 // roughly 2.1 million nodes
 // maxXMLDepth bounds the maximum depth of the XML element tree to prevent stack exhaustion.
 const maxXMLDepth = 129 // 128 but we include <plist>
 
+// replacer is used to remove all whitespace characters from a string in a <data> element.
+// package level as we don't need to re-instantiate it for every <data> element.
+var replacer = strings.NewReplacer("\t", "", "\n", "", " ", "", "\r", "")
+
 // xmlParser uses xml.Decoder to parse an xml plist into the corresponding plistValues
 type xmlParser struct {
 	depth int // current depth of the XML element tree
@@ -257,7 +261,6 @@ func (p *xmlParser) parseInteger(element *xml.StartElement) (*plistValue, error)
 }
 
 func (p *xmlParser) parseData(element *xml.StartElement) (*plistValue, error) {
-	replacer := strings.NewReplacer("\t", "", "\n", "", " ", "", "\r", "")
 	var data []byte
 	if err := p.DecodeElement(&data, element); err != nil {
 		return nil, err
